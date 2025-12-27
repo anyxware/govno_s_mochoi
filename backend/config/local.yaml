@@ -1,0 +1,13 @@
+env: "local"
+frontend:
+  host: "localhost"
+  port: "3000"
+backend:
+  host: "localhost"
+  port: "8080"
+database:
+  host: "localhost"
+  port: "5432"
+  user: "postgres"
+  password: "postgres"
+  dbname: "postgres"
