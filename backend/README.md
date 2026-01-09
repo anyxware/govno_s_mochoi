@@ -1,0 +1,5 @@
+# Backend
+
+```
+go build && ./zis
+```
