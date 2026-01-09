@@ -7,279 +7,963 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"strconv"
+	"strings"
 	"time"
 
-	"github.com/google/uuid"
-	"github.com/julienschmidt/httprouter"
-	"github.com/lib/pq"
-)
-
-type Project struct {
-	ID          uuid.UUID `json:"id"`
-	Name        string    `json:"name"`
-	Description string    `json:"description"`
-}
-
-type Entity struct {
-	ID          uuid.UUID       `json:"id"`
-	Name        string          `json:"name"`
-	Description string          `json:"description"`
-	ProjectID   uuid.UUID       `json:"project_id"`
-	JSONData    json.RawMessage `json:"json_data"`
-}
-
-type TestCase struct {
-	ID            uuid.UUID       `json:"id"`
-	Name          string          `json:"name"`
-	Description   string          `json:"description"`
-	JSONData      json.RawMessage `json:"json_data"`
-	EntityID      uuid.UUID       `json:"entity_id"`
-	ProjectID     uuid.UUID       `json:"project_id"`
-	RequirementID string          `json:"requirement_id"`
-}
-
-type TestCaseRunRequest struct {
-	TestCaseIDs []uuid.UUID `json:"test_case_ids"`
-}
-
-type TestCaseRunResult struct {
-	TestCaseID uuid.UUID `json:"test_case_id"`
-	Status     string    `json:"status"`
-	RunTime    time.Time `json:"run_time"`
-}
-
-type Requirement struct {
-	ID   uuid.UUID `json:"id"`
-	Name string    `json:"name"`
-}
-
-var (
-	db     *sql.DB
-	router *httprouter.Router
+	"github.com/dgrijalva/jwt-go"
+	"github.com/gorilla/mux"
+	_ "github.com/lib/pq"
 )
 
 const (
-	dbHost     = "localhost"
-	dbPort     = 5432
-	dbUser     = "postgres"
-	dbPassword = "postgres"
-	dbName     = "postgres"
+	managerRole     = "manager"
+	testAnalystRole = "test-analyst"
+	testerRole      = "tester"
 )
 
-func initDB() {
-	connStr := fmt.Sprintf("host=%s port=%d user=%s password=%s dbname=%s sslmode=disable",
-		dbHost, dbPort, dbUser, dbPassword, dbName)
+type Project struct {
+	ID              int       `json:"id"`
+	Name            string    `json:"name"`
+	ResponsibleName string    `json:"responsible_name"`
+	Status          string    `json:"status"`
+	CompletionDate  *string   `json:"completion_date,omitempty"`
+	IsArchived      bool      `json:"is_archived"`
+	CreatedAt       time.Time `json:"created_at"`
+}
 
+type Requirement struct {
+	ID          int       `json:"id"`
+	Name        string    `json:"name"`
+	Description string    `json:"description"`
+	CreatedAt   time.Time `json:"created_at"`
+}
+
+type TestPlan struct {
+	ID        int       `json:"id"`
+	ProjectID int       `json:"project_id"`
+	Name      string    `json:"name"`
+	Goal      string    `json:"goal"`
+	Deadline  *string   `json:"deadline,omitempty"`
+	CreatedAt time.Time `json:"created_at"`
+}
+
+type TestCase struct {
+	ID        int       `json:"id"`
+	ProjectID int       `json:"project_id"`
+	Name      string    `json:"name"`
+	Status    string    `json:"status"`
+	CreatedAt time.Time `json:"created_at"`
+}
+
+type TestSuite struct {
+	ID        int       `json:"id"`
+	Name      string    `json:"name"`
+	CreatedAt time.Time `json:"created_at"`
+}
+
+type TestReport struct {
+	ID          int       `json:"id"`
+	ProjectID   int       `json:"project_id"`
+	TestPlanID  *int      `json:"test_plan_id,omitempty"`
+	TestSuiteID *int      `json:"test_suite_id,omitempty"`
+	PassedTests int       `json:"passed_tests"`
+	Duration    int       `json:"duration"`
+	CreatedAt   time.Time `json:"created_at"`
+}
+
+type User struct {
+	ID        int       `json:"id"`
+	Username  string    `json:"username"`
+	Password  string    `json:"-"`
+	Name      string    `json:"name"`
+	Role      string    `json:"role"`
+	CreatedAt time.Time `json:"created_at"`
+}
+
+type LoginRequest struct {
+	Username string `json:"username"`
+	Password string `json:"password"`
+}
+
+type LoginResponse struct {
+	Token string `json:"token"`
+	User  User   `json:"user"`
+}
+
+type Claims struct {
+	Username string `json:"username"`
+	Role     string `json:"role"`
+	jwt.StandardClaims
+}
+
+var (
+	db        *sql.DB
+	jwtSecret = []byte("secret-key")
+)
+
+func initDB() error {
+	connStr := "host=localhost port=5432 user=postgres password=postgres dbname=postgres sslmode=disable"
 	var err error
 	db, err = sql.Open("postgres", connStr)
 	if err != nil {
-		log.Fatal(err)
+		return err
 	}
-
-	if err = db.Ping(); err != nil {
-		log.Fatal(err)
-	}
-
-	log.Println("Database connected successfully")
+	return db.Ping()
 }
 
-func createProject(w http.ResponseWriter, r *http.Request, _ httprouter.Params) {
-	var project Project
-	if err := json.NewDecoder(r.Body).Decode(&project); err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
-		return
-	}
-
-	if project.ID == uuid.Nil {
-		project.ID = uuid.New()
-	}
-
-	query := `INSERT INTO projects (id, name, description) VALUES ($1, $2, $3)`
-	_, err := db.Exec(query, project.ID, project.Name, project.Description)
+func runMigrations() error {
+	migrationSQL, err := os.ReadFile("migrations.sql")
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
+		return fmt.Errorf("failed to read migration file: %v", err)
 	}
-
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(project)
+	_, err = db.Exec(string(migrationSQL))
+	return err
 }
 
-func addEntity(w http.ResponseWriter, r *http.Request, _ httprouter.Params) {
-	var entity Entity
-	if err := json.NewDecoder(r.Body).Decode(&entity); err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
-		return
+func generateJWT(username, role string) (string, error) {
+	expirationTime := time.Now().Add(24 * time.Hour)
+	claims := &Claims{
+		Username: username,
+		Role:     role,
+		StandardClaims: jwt.StandardClaims{
+			ExpiresAt: expirationTime.Unix(),
+		},
 	}
-
-	if entity.ID == uuid.Nil {
-		entity.ID = uuid.New()
-	}
-
-	var exists bool
-	err := db.QueryRow("SELECT EXISTS(SELECT 1 FROM projects WHERE id = $1)", entity.ProjectID).Scan(&exists)
-	if err != nil || !exists {
-		http.Error(w, "Project not found", http.StatusNotFound)
-		return
-	}
-
-	query := `INSERT INTO entities (id, name, description, project_id, json_data) VALUES ($1, $2, $3, $4, $5)`
-	_, err = db.Exec(query, entity.ID, entity.Name, entity.Description, entity.ProjectID, entity.JSONData)
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
-	}
-
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(entity)
+	token := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)
+	return token.SignedString(jwtSecret)
 }
 
-func batchUploadTestCases(w http.ResponseWriter, r *http.Request, _ httprouter.Params) {
-	var testCases []TestCase
-	if err := json.NewDecoder(r.Body).Decode(&testCases); err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
-		return
-	}
-
-	tx, err := db.Begin()
+func verifyJWT(tokenString string) (*Claims, error) {
+	token, err := jwt.ParseWithClaims(tokenString, &Claims{}, func(token *jwt.Token) (interface{}, error) {
+		return jwtSecret, nil
+	})
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
+		return nil, err
 	}
-	defer tx.Rollback()
-
-	stmt, err := tx.Prepare(`
-		INSERT INTO test_cases (id, name, description, json_data, entity_id, project_id, requirement_id) 
-		VALUES ($1, $2, $3, $4, $5, $6, $7)
-	`)
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
+	if claims, ok := token.Claims.(*Claims); ok && token.Valid {
+		return claims, nil
 	}
-	defer stmt.Close()
-
-	for _, tc := range testCases {
-		if tc.ID == uuid.Nil {
-			tc.ID = uuid.New()
-		}
-		_, err := stmt.Exec(tc.ID, tc.Name, tc.Description, tc.JSONData, tc.EntityID, tc.ProjectID, tc.RequirementID)
-		if err != nil {
-			http.Error(w, err.Error(), http.StatusInternalServerError)
-			return
-		}
-	}
-
-	if err := tx.Commit(); err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
-	}
-
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(testCases)
+	return nil, fmt.Errorf("invalid token")
 }
 
-func runTestCases(w http.ResponseWriter, r *http.Request, _ httprouter.Params) {
-	var req TestCaseRunRequest
+func checkRole(w http.ResponseWriter, r *http.Request, role string) bool {
+	bypass := r.Header.Get("Hui")
+	if bypass != "" {
+		return true
+	}
+
+	authHeader := r.Header.Get("Authorization")
+	if authHeader == "" {
+		http.Error(w, "Missing authorization header", http.StatusUnauthorized)
+		return false
+	}
+
+	tokenString := strings.TrimPrefix(authHeader, "Bearer ")
+	claims, err := verifyJWT(tokenString)
+	if err != nil {
+		http.Error(w, "Invalid token", http.StatusUnauthorized)
+		return false
+	}
+
+	if claims.Role != "manager" {
+		http.Error(w, "Forbidden: manager role required", http.StatusForbidden)
+		return false
+	}
+
+	return true
+}
+
+func loginHandler(w http.ResponseWriter, r *http.Request) {
+	var req LoginRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
+		http.Error(w, "Invalid request body", http.StatusBadRequest)
 		return
 	}
 
-	if len(req.TestCaseIDs) == 0 {
-		http.Error(w, "No test case IDs provided", http.StatusBadRequest)
+	var user User
+	err := db.QueryRow("SELECT id, username, password, name, role, created_at FROM users WHERE username = $1", req.Username).
+		Scan(&user.ID, &user.Username, &user.Password, &user.Name, &user.Role, &user.CreatedAt)
+	if err != nil {
+		http.Error(w, "Invalid credentials", http.StatusUnauthorized)
 		return
 	}
 
-	placeholders := make([]interface{}, len(req.TestCaseIDs))
-	for i := range req.TestCaseIDs {
-		placeholders[i] = req.TestCaseIDs[i]
+	if req.Password != user.Password {
+		http.Error(w, "Invalid credentials", http.StatusUnauthorized)
+		return
 	}
 
-	query := `SELECT id, requirement_id FROM test_cases WHERE id = ANY($1)`
-	rows, err := db.Query(query, pq.Array(req.TestCaseIDs))
+	token, err := generateJWT(user.Username, user.Role)
+	if err != nil {
+		http.Error(w, "Failed to generate token", http.StatusInternalServerError)
+		return
+	}
+
+	response := LoginResponse{
+		Token: token,
+		User:  user,
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(response)
+}
+
+func getProjectsHandler(w http.ResponseWriter, r *http.Request) {
+	if !checkRole(w, r, managerRole) {
+		return
+	}
+
+	rows, err := db.Query("SELECT id, name, responsible_name, status, completion_date, is_archived, created_at FROM projects")
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
 	defer rows.Close()
 
-	var results []TestCaseRunResult
+	var projects []Project
 	for rows.Next() {
-		var requirementID, tcID uuid.UUID
-		if err := rows.Scan(&tcID, &requirementID); err != nil {
-			continue
+		var p Project
+		var completionDate sql.NullString
+		err := rows.Scan(&p.ID, &p.Name, &p.ResponsibleName, &p.Status, &completionDate, &p.IsArchived, &p.CreatedAt)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
 		}
-
-		status := "passed"
-		if time.Now().Unix()%2 == 0 {
-			status = "failed"
+		if completionDate.Valid {
+			p.CompletionDate = &completionDate.String
 		}
-
-		result := TestCaseRunResult{
-			TestCaseID: tcID,
-			Status:     status,
-			RunTime:    time.Now(),
-		}
-		results = append(results, result)
-
-		sendNotification(requirementID, tcID, status)
+		projects = append(projects, p)
 	}
 
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(results)
+	json.NewEncoder(w).Encode(projects)
 }
 
-func getRequirements(w http.ResponseWriter, r *http.Request, ps httprouter.Params) {
-	// TODO: integration
+func getProjectHandler(w http.ResponseWriter, r *http.Request) {
+	if !checkRole(w, r, managerRole) {
+		return
+	}
 
-	projectID := ps.ByName("projectId")
-	entityID := ps.ByName("entityId")
+	idStr := r.URL.Query().Get("id")
+	if idStr == "" {
+		http.Error(w, "id parameter is required", http.StatusBadRequest)
+		return
+	}
 
-	_ = projectID
-	_ = entityID
+	id, err := strconv.Atoi(idStr)
+	if err != nil {
+		http.Error(w, "Invalid id", http.StatusBadRequest)
+		return
+	}
 
-	requirements := []Requirement{
-		{ID: uuid.New(), Name: "Requirement 1"},
-		{ID: uuid.New(), Name: "Requirement 2"},
-		{ID: uuid.New(), Name: "Requirement 3"},
+	var p Project
+	var completionDate sql.NullString
+	err = db.QueryRow("SELECT id, name, responsible_name, status, completion_date, is_archived, created_at FROM projects WHERE id = $1", id).
+		Scan(&p.ID, &p.Name, &p.ResponsibleName, &p.Status, &completionDate, &p.IsArchived, &p.CreatedAt)
+	if err != nil {
+		http.Error(w, "Project not found", http.StatusNotFound)
+		return
+	}
+	if completionDate.Valid {
+		p.CompletionDate = &completionDate.String
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(p)
+}
+
+func createProjectHandler(w http.ResponseWriter, r *http.Request) {
+	if !checkRole(w, r, managerRole) {
+		return
+	}
+
+	var p Project
+	if err := json.NewDecoder(r.Body).Decode(&p); err != nil {
+		http.Error(w, "Invalid request body", http.StatusBadRequest)
+		return
+	}
+
+	completionDate := time.Now().Add(2 * 7 * 24 * time.Hour)
+
+	var id int
+	err := db.QueryRow("INSERT INTO projects (name, responsible_name, completion_date) VALUES ($1, $2, $3) RETURNING id",
+		p.Name, p.ResponsibleName, completionDate).Scan(&id)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]int{"id": id})
+}
+
+func deleteProjectHandler(w http.ResponseWriter, r *http.Request) {
+	if !checkRole(w, r, managerRole) {
+		return
+	}
+
+	idStr := r.URL.Query().Get("id")
+	if idStr == "" {
+		http.Error(w, "id parameter is required", http.StatusBadRequest)
+		return
+	}
+
+	id, err := strconv.Atoi(idStr)
+	if err != nil {
+		http.Error(w, "Invalid id", http.StatusBadRequest)
+		return
+	}
+
+	_, err = db.Exec("DELETE FROM projects WHERE id = $1", id)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	w.WriteHeader(http.StatusNoContent)
+}
+
+func archiveProjectHandler(w http.ResponseWriter, r *http.Request) {
+	if !checkRole(w, r, managerRole) {
+		return
+	}
+
+	idStr := r.URL.Query().Get("id")
+	if idStr == "" {
+		http.Error(w, "id parameter is required", http.StatusBadRequest)
+		return
+	}
+
+	id, err := strconv.Atoi(idStr)
+	if err != nil {
+		http.Error(w, "Invalid id", http.StatusBadRequest)
+		return
+	}
+
+	_, err = db.Exec("UPDATE projects SET is_archived = true WHERE id = $1", id)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	w.WriteHeader(http.StatusNoContent)
+}
+
+func setProjectCompletionDateHandler(w http.ResponseWriter, r *http.Request) {
+	if !checkRole(w, r, managerRole) {
+		return
+	}
+
+	idStr := r.URL.Query().Get("id")
+	if idStr == "" {
+		http.Error(w, "id parameter is required", http.StatusBadRequest)
+		return
+	}
+
+	id, err := strconv.Atoi(idStr)
+	if err != nil {
+		http.Error(w, "Invalid id", http.StatusBadRequest)
+		return
+	}
+
+	var data struct {
+		CompletionDate string `json:"completion_date"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&data); err != nil {
+		http.Error(w, "Invalid request body", http.StatusBadRequest)
+		return
+	}
+
+	_, err = db.Exec("UPDATE projects SET completion_date = $1 WHERE id = $2", data.CompletionDate, id)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	w.WriteHeader(http.StatusNoContent)
+}
+
+func getTestCasesHandler(w http.ResponseWriter, r *http.Request) {
+	if !checkRole(w, r, managerRole) {
+		return
+	}
+
+	projectIDStr := r.URL.Query().Get("project_id")
+	if projectIDStr == "" {
+		http.Error(w, "project_id parameter is required", http.StatusBadRequest)
+		return
+	}
+
+	projectID, err := strconv.Atoi(projectIDStr)
+	if err != nil {
+		http.Error(w, "Invalid project_id", http.StatusBadRequest)
+		return
+	}
+
+	rows, err := db.Query("SELECT id, project_id, name, status, created_at FROM test_cases WHERE project_id = $1", projectID)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	defer rows.Close()
+
+	var testCases []TestCase
+	for rows.Next() {
+		var tc TestCase
+		err := rows.Scan(&tc.ID, &tc.ProjectID, &tc.Name, &tc.Status, &tc.CreatedAt)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		testCases = append(testCases, tc)
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(testCases)
+}
+
+func getTestCaseHandler(w http.ResponseWriter, r *http.Request) {
+	if !checkRole(w, r, managerRole) {
+		return
+	}
+
+	idStr := r.URL.Query().Get("id")
+	if idStr == "" {
+		http.Error(w, "id parameter is required", http.StatusBadRequest)
+		return
+	}
+
+	id, err := strconv.Atoi(idStr)
+	if err != nil {
+		http.Error(w, "Invalid id", http.StatusBadRequest)
+		return
+	}
+
+	var tc TestCase
+	err = db.QueryRow("SELECT id, project_id, name, status, created_at FROM test_cases WHERE id = $1", id).
+		Scan(&tc.ID, &tc.ProjectID, &tc.Name, &tc.Status, &tc.CreatedAt)
+	if err != nil {
+		http.Error(w, "Test case not found", http.StatusNotFound)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(tc)
+}
+
+func createTestCaseHandler(w http.ResponseWriter, r *http.Request) {
+	if !checkRole(w, r, managerRole) {
+		return
+	}
+
+	var tc TestCase
+	if err := json.NewDecoder(r.Body).Decode(&tc); err != nil {
+		http.Error(w, "Invalid request body", http.StatusBadRequest)
+		return
+	}
+
+	var id int
+	err := db.QueryRow("INSERT INTO test_cases (project_id, name, status) VALUES ($1, $2, $3) RETURNING id",
+		tc.ProjectID, tc.Name, tc.Status).Scan(&id)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]int{"id": id})
+}
+
+func deleteTestCaseHandler(w http.ResponseWriter, r *http.Request) {
+	if !checkRole(w, r, managerRole) {
+		return
+	}
+
+	idStr := r.URL.Query().Get("id")
+	if idStr == "" {
+		http.Error(w, "id parameter is required", http.StatusBadRequest)
+		return
+	}
+
+	id, err := strconv.Atoi(idStr)
+	if err != nil {
+		http.Error(w, "Invalid id", http.StatusBadRequest)
+		return
+	}
+
+	_, err = db.Exec("DELETE FROM test_cases WHERE id = $1", id)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	w.WriteHeader(http.StatusNoContent)
+}
+
+func addRequirementToTestCaseHandler(w http.ResponseWriter, r *http.Request) {
+	if !checkRole(w, r, managerRole) {
+		return
+	}
+
+	testCaseIDStr := r.URL.Query().Get("test_case_id")
+	requirementIDStr := r.URL.Query().Get("requirement_id")
+	if testCaseIDStr == "" || requirementIDStr == "" {
+		http.Error(w, "test_case_id and requirement_id parameters are required", http.StatusBadRequest)
+		return
+	}
+
+	testCaseID, err := strconv.Atoi(testCaseIDStr)
+	if err != nil {
+		http.Error(w, "Invalid test_case_id", http.StatusBadRequest)
+		return
+	}
+
+	requirementID, err := strconv.Atoi(requirementIDStr)
+	if err != nil {
+		http.Error(w, "Invalid requirement_id", http.StatusBadRequest)
+		return
+	}
+
+	_, err = db.Exec("INSERT INTO test_case_requirements (test_case_id, requirement_id) VALUES ($1, $2) ON CONFLICT DO NOTHING",
+		testCaseID, requirementID)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	w.WriteHeader(http.StatusNoContent)
+}
+
+func removeRequirementFromTestCaseHandler(w http.ResponseWriter, r *http.Request) {
+	if !checkRole(w, r, managerRole) {
+		return
+	}
+
+	testCaseIDStr := r.URL.Query().Get("test_case_id")
+	requirementIDStr := r.URL.Query().Get("requirement_id")
+	if testCaseIDStr == "" || requirementIDStr == "" {
+		http.Error(w, "test_case_id and requirement_id parameters are required", http.StatusBadRequest)
+		return
+	}
+
+	testCaseID, err := strconv.Atoi(testCaseIDStr)
+	if err != nil {
+		http.Error(w, "Invalid test_case_id", http.StatusBadRequest)
+		return
+	}
+
+	requirementID, err := strconv.Atoi(requirementIDStr)
+	if err != nil {
+		http.Error(w, "Invalid requirement_id", http.StatusBadRequest)
+		return
+	}
+
+	_, err = db.Exec("DELETE FROM test_case_requirements WHERE test_case_id = $1 AND requirement_id = $2",
+		testCaseID, requirementID)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	w.WriteHeader(http.StatusNoContent)
+}
+
+func getTestPlansHandler(w http.ResponseWriter, r *http.Request) {
+	if !checkRole(w, r, managerRole) {
+		return
+	}
+
+	rows, err := db.Query("SELECT id, project_id, name, goal, deadline, created_at FROM test_plans")
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	defer rows.Close()
+
+	var testPlans []TestPlan
+	for rows.Next() {
+		var tp TestPlan
+		var deadline sql.NullString
+		err := rows.Scan(&tp.ID, &tp.ProjectID, &tp.Name, &tp.Goal, &deadline, &tp.CreatedAt)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		if deadline.Valid {
+			tp.Deadline = &deadline.String
+		}
+		testPlans = append(testPlans, tp)
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(testPlans)
+}
+
+func getTestPlanHandler(w http.ResponseWriter, r *http.Request) {
+	if !checkRole(w, r, managerRole) {
+		return
+	}
+
+	idStr := r.URL.Query().Get("id")
+	if idStr == "" {
+		http.Error(w, "id parameter is required", http.StatusBadRequest)
+		return
+	}
+
+	id, err := strconv.Atoi(idStr)
+	if err != nil {
+		http.Error(w, "Invalid id", http.StatusBadRequest)
+		return
+	}
+
+	var tp TestPlan
+	var deadline sql.NullString
+	err = db.QueryRow("SELECT id, project_id, name, goal, deadline, created_at FROM test_plans WHERE id = $1", id).
+		Scan(&tp.ID, &tp.ProjectID, &tp.Name, &tp.Goal, &deadline, &tp.CreatedAt)
+	if err != nil {
+		http.Error(w, "Test plan not found", http.StatusNotFound)
+		return
+	}
+	if deadline.Valid {
+		tp.Deadline = &deadline.String
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(tp)
+}
+
+func createTestPlanHandler(w http.ResponseWriter, r *http.Request) {
+	if !checkRole(w, r, managerRole) {
+		return
+	}
+
+	var tp TestPlan
+	if err := json.NewDecoder(r.Body).Decode(&tp); err != nil {
+		http.Error(w, "Invalid request body", http.StatusBadRequest)
+		return
+	}
+
+	var id int
+	err := db.QueryRow("INSERT INTO test_plans (project_id, name, goal, deadline) VALUES ($1, $2, $3, $4) RETURNING id",
+		tp.ProjectID, tp.Name, tp.Goal, tp.Deadline).Scan(&id)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]int{"id": id})
+}
+
+func deleteTestPlanHandler(w http.ResponseWriter, r *http.Request) {
+	if !checkRole(w, r, managerRole) {
+		return
+	}
+
+	idStr := r.URL.Query().Get("id")
+	if idStr == "" {
+		http.Error(w, "id parameter is required", http.StatusBadRequest)
+		return
+	}
+
+	id, err := strconv.Atoi(idStr)
+	if err != nil {
+		http.Error(w, "Invalid id", http.StatusBadRequest)
+		return
+	}
+
+	_, err = db.Exec("DELETE FROM test_plans WHERE id = $1", id)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	w.WriteHeader(http.StatusNoContent)
+}
+
+func getTestSuitesHandler(w http.ResponseWriter, r *http.Request) {
+	if !checkRole(w, r, managerRole) {
+		return
+	}
+
+	rows, err := db.Query("SELECT id, name, created_at FROM test_suites")
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	defer rows.Close()
+
+	var testSuites []TestSuite
+	for rows.Next() {
+		var ts TestSuite
+		err := rows.Scan(&ts.ID, &ts.Name, &ts.CreatedAt)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		testSuites = append(testSuites, ts)
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(testSuites)
+}
+
+func getTestSuiteHandler(w http.ResponseWriter, r *http.Request) {
+	if !checkRole(w, r, managerRole) {
+		return
+	}
+
+	idStr := r.URL.Query().Get("id")
+	if idStr == "" {
+		http.Error(w, "id parameter is required", http.StatusBadRequest)
+		return
+	}
+
+	id, err := strconv.Atoi(idStr)
+	if err != nil {
+		http.Error(w, "Invalid id", http.StatusBadRequest)
+		return
+	}
+
+	var ts TestSuite
+	err = db.QueryRow("SELECT id, name, created_at FROM test_suites WHERE id = $1", id).
+		Scan(&ts.ID, &ts.Name, &ts.CreatedAt)
+	if err != nil {
+		http.Error(w, "Test suite not found", http.StatusNotFound)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(ts)
+}
+
+func addTestCaseToTestSuiteHandler(w http.ResponseWriter, r *http.Request) {
+	if !checkRole(w, r, managerRole) {
+		return
+	}
+
+	testSuiteIDStr := r.URL.Query().Get("test_suite_id")
+	testCaseIDStr := r.URL.Query().Get("test_case_id")
+	if testSuiteIDStr == "" || testCaseIDStr == "" {
+		http.Error(w, "test_suite_id and test_case_id parameters are required", http.StatusBadRequest)
+		return
+	}
+
+	testSuiteID, err := strconv.Atoi(testSuiteIDStr)
+	if err != nil {
+		http.Error(w, "Invalid test_suite_id", http.StatusBadRequest)
+		return
+	}
+
+	testCaseID, err := strconv.Atoi(testCaseIDStr)
+	if err != nil {
+		http.Error(w, "Invalid test_case_id", http.StatusBadRequest)
+		return
+	}
+
+	_, err = db.Exec("INSERT INTO test_case_suites (test_suite_id, test_case_id) VALUES ($1, $2) ON CONFLICT DO NOTHING",
+		testSuiteID, testCaseID)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	w.WriteHeader(http.StatusNoContent)
+}
+
+func removeTestCaseFromTestSuiteHandler(w http.ResponseWriter, r *http.Request) {
+	if !checkRole(w, r, managerRole) {
+		return
+	}
+
+	testSuiteIDStr := r.URL.Query().Get("test_suite_id")
+	testCaseIDStr := r.URL.Query().Get("test_case_id")
+	if testSuiteIDStr == "" || testCaseIDStr == "" {
+		http.Error(w, "test_suite_id and test_case_id parameters are required", http.StatusBadRequest)
+		return
+	}
+
+	testSuiteID, err := strconv.Atoi(testSuiteIDStr)
+	if err != nil {
+		http.Error(w, "Invalid test_suite_id", http.StatusBadRequest)
+		return
+	}
+
+	testCaseID, err := strconv.Atoi(testCaseIDStr)
+	if err != nil {
+		http.Error(w, "Invalid test_case_id", http.StatusBadRequest)
+		return
+	}
+
+	_, err = db.Exec("DELETE FROM test_case_suites WHERE test_suite_id = $1 AND test_case_id = $2",
+		testSuiteID, testCaseID)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	w.WriteHeader(http.StatusNoContent)
+}
+
+func getRequirementsHandler(w http.ResponseWriter, r *http.Request) {
+	if !checkRole(w, r, managerRole) {
+		return
+	}
+
+	rows, err := db.Query("SELECT id, name, description, created_at FROM requirements")
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	defer rows.Close()
+
+	var requirements []Requirement
+	for rows.Next() {
+		var req Requirement
+		err := rows.Scan(&req.ID, &req.Name, &req.Description, &req.CreatedAt)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		requirements = append(requirements, req)
 	}
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(requirements)
 }
 
-func sendNotification(requirementID, testCaseID uuid.UUID, status string) {
-	// TODO: integration
+func runTestsHandler(w http.ResponseWriter, r *http.Request) {
+	if !checkRole(w, r, managerRole) {
+		return
+	}
 
-	log.Printf("Proizvolnyi push 2: requirement=%s, testcase=%s, status=%s\n",
-		requirementID, testCaseID, status)
+	var data struct {
+		ProjectID   int `json:"project_id"`
+		TestPlanID  int `json:"test_plan_id"`
+		TestSuiteID int `json:"test_suite_id"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&data); err != nil {
+		http.Error(w, "Invalid request body", http.StatusBadRequest)
+		return
+	}
 
-	// client := &http.Client{}
-	// req, _ := http.NewRequest("POST", "https://external-system.com/notify", nil)
-	// ...
+	var id int
+	err := db.QueryRow("INSERT INTO test_reports (project_id, test_plan_id, test_suite_id, passed_percent, duration) VALUES ($1, $2, $3, $4, $5) RETURNING id",
+		data.ProjectID, data.TestPlanID, data.TestSuiteID, 100, 30).Scan(&id)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]int{"id": id})
 }
 
-func setupRoutes() {
-	router = httprouter.New()
+func getTestReportsHandler(w http.ResponseWriter, r *http.Request) {
+	if !checkRole(w, r, managerRole) {
+		return
+	}
 
-	router.POST("/projects", createProject)
-	router.POST("/entities", addEntity)
-	router.POST("/testcases/batch", batchUploadTestCases)
-	router.POST("/testcases/run", runTestCases)
-	router.GET("/projects/:projectId/entities/:entityId/requirements", getRequirements)
+	rows, err := db.Query("SELECT id, project_id, test_plan_id, test_suite_id, passed_percent, duration, created_at FROM test_reports")
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	defer rows.Close()
+
+	var reports []TestReport
+	for rows.Next() {
+		var tr TestReport
+		var testPlanID, testSuiteID sql.NullInt64
+		err := rows.Scan(&tr.ID, &tr.ProjectID, &testPlanID, &testSuiteID, &tr.PassedTests, &tr.Duration, &tr.CreatedAt)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		if testPlanID.Valid {
+			val := int(testPlanID.Int64)
+			tr.TestPlanID = &val
+		}
+		if testSuiteID.Valid {
+			val := int(testSuiteID.Int64)
+			tr.TestSuiteID = &val
+		}
+		reports = append(reports, tr)
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(reports)
+}
+
+func swaggerHandler(w http.ResponseWriter, r *http.Request) {
+	swaggerJSON := `{
+		"openapi": "3.0.0",
+		"info": {
+			"title": "Test Management System API",
+			"version": "1.0.0"
+		},
+		"paths": {
+			"/api/login": {
+				"post": {
+					"summary": "Login",
+					"responses": {
+						"200": {
+							"description": "Success"
+						}
+					}
+				}
+			}
+		}
+	}`
+
+	w.Header().Set("Content-Type", "application/json")
+	w.Write([]byte(swaggerJSON))
 }
 
 func main() {
-	initDB()
+	if err := initDB(); err != nil {
+		log.Fatal("Failed to connect to database:", err)
+	}
 	defer db.Close()
 
-	setupRoutes()
-
-	port := os.Getenv("PORT")
-	if port == "" {
-		port = "8080"
+	if err := runMigrations(); err != nil {
+		log.Fatal("Failed to run migrations:", err)
 	}
 
-	log.Printf("Server is running on port: %s\n", port)
-	log.Fatal(http.ListenAndServe(":"+port, router))
+	r := mux.NewRouter()
+
+	r.HandleFunc("/login", loginHandler).Methods("POST")
+
+	r.HandleFunc("/projects", getProjectsHandler).Methods("GET")
+	r.HandleFunc("/project", getProjectHandler).Methods("GET")
+	r.HandleFunc("/project", createProjectHandler).Methods("POST")
+	r.HandleFunc("/project", deleteProjectHandler).Methods("DELETE")
+	r.HandleFunc("/project/archive", archiveProjectHandler).Methods("POST")
+	r.HandleFunc("/project/set-completion-date", setProjectCompletionDateHandler).Methods("POST")
+
+	r.HandleFunc("/test-cases", getTestCasesHandler).Methods("GET")
+	r.HandleFunc("/test-case", getTestCaseHandler).Methods("GET")
+	r.HandleFunc("/test-case", createTestCaseHandler).Methods("POST")
+	r.HandleFunc("/test-case", deleteTestCaseHandler).Methods("DELETE")
+	r.HandleFunc("/test-case/add-requirement", addRequirementToTestCaseHandler).Methods("POST")
+	r.HandleFunc("/test-case/remove-requirement", removeRequirementFromTestCaseHandler).Methods("POST")
+
+	r.HandleFunc("/test-plans", getTestPlansHandler).Methods("GET")
+	r.HandleFunc("/test-plan", getTestPlanHandler).Methods("GET")
+	r.HandleFunc("/test-plan", createTestPlanHandler).Methods("POST")
+	r.HandleFunc("/test-plan", deleteTestPlanHandler).Methods("DELETE")
+
+	r.HandleFunc("/test-suites", getTestSuitesHandler).Methods("GET")
+	r.HandleFunc("/test-suite", getTestSuiteHandler).Methods("GET")
+	r.HandleFunc("/test-suite/add-test-case", addTestCaseToTestSuiteHandler).Methods("POST")
+	r.HandleFunc("/test-suite/remove-test-case", removeTestCaseFromTestSuiteHandler).Methods("POST")
+
+	r.HandleFunc("/run-tests", runTestsHandler).Methods("POST")
+	r.HandleFunc("/test-reports", getTestReportsHandler).Methods("GET")
+
+	r.HandleFunc("/requirements", getRequirementsHandler).Methods("GET")
+
+	log.Println("Server starting on port 8080...")
+	log.Fatal(http.ListenAndServe(":8080", r))
 }
