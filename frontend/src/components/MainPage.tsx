@@ -1,10 +1,11 @@
 import { useState, useEffect } from 'react';
-import { 
+import {
   HelpCircle, PlayCircle, FileText, BarChart3,
   Rocket, FolderOpen, ClipboardList, Undo2, Plus, Edit, Trash2,
   LogOut, User, Archive, Upload, Search, Download, X, AlertCircle, CheckCircle, Link, Settings
 } from 'lucide-react';
 import { LineChart, Line, BarChart, Bar, PieChart, Pie, Cell, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer } from 'recharts';
+import { ApiService } from './ApiService';
 
 interface Requirement {
   id: string;
@@ -114,7 +115,62 @@ let usersDataState: SystemUser[] = [
   { id: 'USR-005', name: 'Михаил Волков', email: 'mikhail.volkov@example.com', role: 'reader' },
 ];
 
-export function TestLaunchPage() {
+export function MainPage() {
+  const [isAuthenticated, setIsAuthenticated] = useState(false);
+  const [isLoading, setIsLoading] = useState(true);
+  const [user, setUser] = useState<SystemUser | null>(null);
+
+  // Проверяем авторизацию при загрузке
+  useEffect(() => {
+    checkAuth();
+  }, []);
+
+  const checkAuth = async () => {
+    setIsLoading(true);
+    
+    // Проверяем наличие токена
+    if (!ApiService.isAuthenticated()) {
+      setIsLoading(false);
+      return;
+    }
+    
+
+    // TODO: проверять пользователей
+      setIsAuthenticated(true);
+    // try {
+    //   // Загружаем профиль пользователя
+    //   const profileResult = await ApiService.getProfile();
+      
+    //   if (profileResult.error) {
+    //     // Если ошибка, удаляем невалидный токен
+    //     ApiService.removeToken();
+    //     localStorage.removeItem('user_profile');
+    //   } else if (profileResult.data) {
+    //     setUser(profileResult.data);
+    //     localStorage.setItem('user_profile', JSON.stringify(profileResult.data));
+    //     setIsAuthenticated(true);
+    //   }
+    // } catch (error) {
+    //   console.error('Auth check failed:', error);
+    //   ApiService.removeToken();
+    // } finally {
+    //   setIsLoading(false);
+    // }
+  };
+
+  const handleLogin = () => {
+    setIsAuthenticated(true);
+    // Перезагружаем профиль
+    checkAuth();
+  };
+
+  // const handleLogout = () => {
+  //   ApiService.removeToken();
+  //   localStorage.removeItem('user_profile');
+  //   setIsAuthenticated(false);
+  //   setUser(null);
+  // };
+
   const [activeTab, setActiveTab] = useState<'dashboard' | 'projects' | 'archived-projects' | 'requirements' | 'reports' | 'testing' | 'profile' | 'settings'>('dashboard');
   const [selectedPlan, setSelectedPlan] = useState('integration');
   const [showHelp, setShowHelp] = useState(false);
@@ -122,13 +178,36 @@ export function TestLaunchPage() {
   const [history, setHistory] = useState<string[]>(['dashboard']);
   const [errorModal, setErrorModal] = useState<{ show: boolean; message: string; type: 'error' | 'success' }>({ show: false, message: '', type: 'error' });
   const [selectedTestSuite, setSelectedTestSuite] = useState('');
-  const [projectsData, setProjectsData] = useState(projectsDataState);
+  const [projectsData, setProjectsData] = useState<Project[]>([]); // TEST BACKEND
   const [requirementsData, setRequirementsData] = useState(requirementsDataState);
   const [testCasesData, setTestCasesData] = useState(testCasesDataState);
   const [testSuitesData, setTestSuitesData] = useState(testSuitesDataState);
   const [testPlansData, setTestPlansData] = useState(testPlansDataState);
   const [usersData, setUsersData] = useState(usersDataState);
   const [currentUser, setCurrentUser] = useState<SystemUser>(usersDataState[0]); // По умолчанию админ
+
+  useEffect(() => {
+    loadProjectsFromBackend();
+  }, []);
+
+  const loadProjectsFromBackend = async () => {
+    try {
+      const result = await ApiService.getProjects();
+      
+      if (result.error) {
+        showError(`Ошибка загрузки проектов: ${result.error}`);
+        return;
+      }
+      
+      if (result.data) {
+        setProjectsData(result.data);
+        showError('Проекты успешно загружены', 'success');
+      }
+    } catch (error) {
+      console.error('Ошибка загрузки проектов:', error);
+      showError('Не удалось загрузить проекты. Проверьте подключение к серверу.');
+    }
+  };
 
   const showNotification = (message: string) => {
     setNotification(message);
@@ -558,9 +637,9 @@ function TestStatusBadge({ status }: { status: string }) {
 }
 
 // Projects View
-function ProjectsView({ 
-  projectsData, 
-  setProjectsData, 
+function ProjectsView({
+  projectsData,
+  setProjectsData,
   requirementsData,
   testCasesData,
   setTestCasesData,
@@ -568,8 +647,8 @@ function ProjectsView({
   setTestSuitesData,
   testPlansData,
   setTestPlansData,
-  showError 
-}: { 
+  showError
+}: {
   projectsData: Project[];
   setProjectsData: (data: Project[]) => void;
   requirementsData: Requirement[];
@@ -594,7 +673,7 @@ function ProjectsView({
 
   const handleSaveProject = () => {
     if (!selectedProject) return;
-    const updated = projectsData.map(p => 
+    const updated = projectsData.map(p =>
       p.id === selectedProject.id ? {...p, name: editingProject.name, completionDate: editingProject.completionDate} : p
     );
     setProjectsData(updated);
@@ -612,9 +691,9 @@ function ProjectsView({
 
   if (selectedProject) {
     return (
-      <ProjectDetailView 
-        project={selectedProject} 
-        onBack={() => setSelectedProject(null)} 
+      <ProjectDetailView
+        project={selectedProject}
+        onBack={() => setSelectedProject(null)}
         onEdit={() => handleEditProject(selectedProject)}
         onArchive={() => handleArchiveProject(selectedProject.id)}
         requirementsData={requirementsData}
@@ -624,7 +703,7 @@ function ProjectsView({
         setTestSuitesData={setTestSuitesData}
         testPlansData={testPlansData}
         setTestPlansData={setTestPlansData}
-        showError={showError} 
+        showError={showError}
       />
     );
   }
@@ -671,7 +750,7 @@ function ProjectsView({
             onClick={(e) => e.stopPropagation()}
           >
             <h2 className="text-xl mb-6 text-[#f19fb5]">Редактирование проекта</h2>
-            
+
             <div className="space-y-4">
               <div>
                 <label className="block mb-2">Название проекта</label>
@@ -716,9 +795,9 @@ function ProjectsView({
 }
 
 // Project Detail View
-function ProjectDetailView({ 
-  project, 
-  onBack, 
+function ProjectDetailView({
+  project,
+  onBack,
   onEdit,
   onArchive,
   requirementsData,
@@ -728,9 +807,9 @@ function ProjectDetailView({
   setTestSuitesData,
   testPlansData,
   setTestPlansData,
-  showError 
-}: { 
-  project: Project; 
+  showError
+}: {
+  project: Project;
   onBack: () => void;
   onEdit: () => void;
   onArchive: () => void;
@@ -759,14 +838,14 @@ function ProjectDetailView({
           <h1 className="text-[26px] text-[#1e1e1e]">{project.name}</h1>
         </div>
         <div className="flex gap-3">
-          <button 
+          <button
             onClick={onEdit}
             className="px-4 py-2 border border-[#f1d6df] text-[#2b2f33] rounded-lg hover:bg-[#fff6fb] transition-all flex items-center gap-2"
           >
             <Edit className="w-4 h-4" />
             Редактировать
           </button>
-          <button 
+          <button
             onClick={onArchive}
             className="px-4 py-2 bg-[#e2e3e5] text-[#383d41] rounded-lg hover:bg-[#d6d8db] transition-all flex items-center gap-2"
           >
@@ -818,13 +897,13 @@ function ProjectDetailView({
 }
 
 // Test Cases Tab (in project detail)
-function TestCasesTab({ 
-  project, 
+function TestCasesTab({
+  project,
   requirementsData,
   testCasesData,
   setTestCasesData,
-  showError 
-}: { 
+  showError
+}: {
   project: Project;
   requirementsData: Requirement[];
   testCasesData: TestCase[];
@@ -876,7 +955,7 @@ function TestCasesTab({
 
   const handleSaveRequirements = () => {
     if (!selectedTestCase) return;
-    const updated = testCasesData.map(tc => 
+    const updated = testCasesData.map(tc =>
       tc.id === selectedTestCase ? {...tc, requirements: newTestCase.requirements} : tc
     );
     setTestCasesData(updated);
@@ -895,7 +974,7 @@ function TestCasesTab({
     <>
       <div className="flex justify-between items-center mb-4">
         <h2 className="text-xl">Тест-кейсы проекта</h2>
-        <button 
+        <button
           onClick={() => setShowCreateModal(true)}
           className="bg-[#f19fb5] text-white px-4 py-2 rounded-lg hover:bg-[#e27091] transition-all flex items-center gap-2"
         >
@@ -924,15 +1003,15 @@ function TestCasesTab({
                 <td className="py-3 px-4">{tc.requirements.length} требований</td>
                 <td className="py-3 px-4">
                   <div className="flex gap-2">
-                    <button 
+                    <button
                       onClick={() => handleAttachRequirements(tc.id)}
                       className="px-3 py-1.5 bg-[#e3f2fd] text-[#1565c0] rounded-lg text-sm hover:bg-[#bbdefb] transition-all"
                     >
                       Требования
                     </button>
-                    <button 
+                    <button
                       onClick={() => handleDeleteTestCase(tc.id)}
-                      className="p-1.5 hover:bg-[#ffd7db] rounded-lg transition-all" 
+                      className="p-1.5 hover:bg-[#ffd7db] rounded-lg transition-all"
                       title="Удалить"
                     >
                       <Trash2 className="w-4 h-4 text-[#b12e4a]" />
@@ -956,7 +1035,7 @@ function TestCasesTab({
             onClick={(e) => e.stopPropagation()}
           >
             <h2 className="text-xl mb-6 text-[#f19fb5]">Создание тест-кейса</h2>
-            
+
             <div className="space-y-4">
               <div>
                 <label className="block mb-2">Название тест-кейса *</label>
@@ -1032,7 +1111,7 @@ function TestCasesTab({
             onClick={(e) => e.stopPropagation()}
           >
             <h2 className="text-xl mb-6 text-[#f19fb5]">Подключение требований</h2>
-            
+
             <div className="mb-6">
               <h3 className="mb-3">Выберите требования ({newTestCase.requirements.length} выбрано)</h3>
               <div className="border border-[#f1d6df] rounded-lg p-4 max-h-[400px] overflow-y-auto">
@@ -1081,13 +1160,13 @@ function TestCasesTab({
 }
 
 // Test Suites Tab
-function TestSuitesTab({ 
-  project, 
+function TestSuitesTab({
+  project,
   testCasesData,
   testSuitesData,
   setTestSuitesData,
-  showError 
-}: { 
+  showError
+}: {
   project: Project;
   testCasesData: TestCase[];
   testSuitesData: TestSuite[];
@@ -1140,7 +1219,7 @@ function TestSuitesTab({
     <>
       <div className="flex justify-between items-center mb-4">
         <h2 className="text-xl">Тестовые наборы</h2>
-        <button 
+        <button
           onClick={() => setShowCreateModal(true)}
           className="bg-[#f19fb5] text-white px-4 py-2 rounded-lg hover:bg-[#e27091] transition-all flex items-center gap-2"
         >
@@ -1156,21 +1235,21 @@ function TestSuitesTab({
               <div className="flex justify-between items-start mb-2">
                 <h3 className="text-lg text-[#f19fb5]">{suite.name}</h3>
                 <div className="flex gap-2">
-                  <button 
+                  <button
                     onClick={() => setViewingSuite(suite)}
                     className="px-3 py-1.5 bg-[#f19fb5] text-white rounded-lg text-sm hover:bg-[#e27091] transition-all"
                   >
                     Просмотр
                   </button>
-                  <button 
+                  <button
                     onClick={() => { setEditingSuite(suite); setShowEditModal(true); }}
                     className="p-1.5 hover:bg-[#ffe9f0] rounded-lg transition-all"
                   >
                     <Edit className="w-4 h-4 text-[#f19fb5]" />
                   </button>
-                  <button 
+                  <button
                     onClick={() => handleDeleteSuite(suite.id)}
-                    className="p-1.5 hover:bg-[#ffd7db] rounded-lg transition-all" 
+                    className="p-1.5 hover:bg-[#ffd7db] rounded-lg transition-all"
                     title="Удалить"
                   >
                     <Trash2 className="w-4 h-4 text-[#b12e4a]" />
@@ -1193,18 +1272,18 @@ function TestSuitesTab({
         </div>
       ) : (
         <div>
-          <button 
+          <button
             onClick={() => setViewingSuite(null)}
             className="text-[#f19fb5] hover:underline mb-4 flex items-center gap-2"
           >
             <Undo2 className="w-4 h-4" />
             Назад к наборам
           </button>
-          
+
           <div className="bg-white border border-[#f1d6df] rounded-lg p-6">
             <h2 className="text-xl text-[#f19fb5] mb-4">{viewingSuite.name}</h2>
             <p className="text-[#6c757d] mb-6">{viewingSuite.description}</p>
-            
+
             <h3 className="mb-3">Тест-кейсы в наборе ({viewingSuite.testCases.length})</h3>
             <div className="space-y-2">
               {viewingSuite.testCases.map((tcId) => {
@@ -1234,7 +1313,7 @@ function TestSuitesTab({
             onClick={(e) => e.stopPropagation()}
           >
             <h2 className="text-xl mb-6 text-[#f19fb5]">Создание тестового набора</h2>
-            
+
             <div className="space-y-4">
               <div>
                 <label className="block mb-2">Название набора *</label>
@@ -1308,7 +1387,7 @@ function TestSuitesTab({
             onClick={(e) => e.stopPropagation()}
           >
             <h2 className="text-xl mb-6 text-[#f19fb5]">Редактирование тестового набора</h2>
-            
+
             <div className="space-y-4">
               <div>
                 <label className="block mb-2">Название набора *</label>
@@ -1375,13 +1454,13 @@ function TestSuitesTab({
 }
 
 // Test Plans Tab
-function TestPlansTab({ 
-  project, 
+function TestPlansTab({
+  project,
   requirementsData,
   testPlansData,
   setTestPlansData,
-  showError 
-}: { 
+  showError
+}: {
   project: Project;
   requirementsData: Requirement[];
   testPlansData: TestPlan[];
@@ -1431,7 +1510,7 @@ function TestPlansTab({
     <>
       <div className="flex justify-between items-center mb-4">
         <h2 className="text-xl">Тест-планы проекта</h2>
-        <button 
+        <button
           onClick={() => setShowCreateModal(true)}
           className="bg-[#f19fb5] text-white px-4 py-2 rounded-lg hover:bg-[#e27091] transition-all flex items-center gap-2"
         >
@@ -1454,16 +1533,16 @@ function TestPlansTab({
                 </div>
               </div>
               <div className="flex gap-2">
-                <button 
+                <button
                   onClick={() => handleDeletePlan(plan.id)}
-                  className="p-2 hover:bg-[#ffd7db] rounded-lg transition-all" 
+                  className="p-2 hover:bg-[#ffd7db] rounded-lg transition-all"
                   title="Удалить"
                 >
                   <Trash2 className="w-4 h-4 text-[#b12e4a]" />
                 </button>
               </div>
             </div>
-            
+
             {plan.requirements.length > 0 && (
               <div className="pt-3 border-t border-[#f1d6df]">
                 <h4 className="text-sm mb-2">Связанные требования:</h4>
@@ -1500,7 +1579,7 @@ function TestPlansTab({
             onClick={(e) => e.stopPropagation()}
           >
             <h2 className="text-xl mb-6 text-[#f19fb5]">Создание тест-плана</h2>
-            
+
             <div className="space-y-4">
               <div>
                 <label className="block mb-2">Название тест-плана *</label>
@@ -1626,11 +1705,11 @@ function TestPlansTab({
 }
 
 // Archived Projects View
-function ArchivedProjectsView({ 
-  projectsData, 
-  setProjectsData, 
-  showError 
-}: { 
+function ArchivedProjectsView({
+  projectsData,
+  setProjectsData,
+  showError
+}: {
   projectsData: Project[];
   setProjectsData: (data: Project[]) => void;
   showError: (msg: string, type?: 'error' | 'success') => void;
@@ -1708,11 +1787,11 @@ function ArchivedProjectsView({
 }
 
 // Requirements View
-function RequirementsView({ 
-  requirementsData, 
-  setRequirementsData, 
-  showError 
-}: { 
+function RequirementsView({
+  requirementsData,
+  setRequirementsData,
+  showError
+}: {
   requirementsData: Requirement[];
   setRequirementsData: (data: Requirement[]) => void;
   showError: (msg: string, type?: 'error' | 'success') => void;
@@ -1757,7 +1836,7 @@ function RequirementsView({
     <>
       <div className="flex justify-between items-center mb-6">
         <h1 className="text-[26px] text-[#1e1e1e]">Требования</h1>
-        <button 
+        <button
           onClick={() => setShowCreateModal(true)}
           className="bg-[#f19fb5] text-white px-4 py-2 rounded-lg hover:bg-[#e27091] transition-all flex items-center gap-2"
         >
@@ -1784,15 +1863,15 @@ function RequirementsView({
                 <td className="py-3 px-4">{req.description}</td>
                 <td className="py-3 px-4">
                   <div className="flex gap-2">
-                    <button 
+                    <button
                       onClick={() => { setEditingReq(req); setShowEditModal(true); }}
                       className="p-1.5 hover:bg-[#ffe9f0] rounded-lg transition-all"
                     >
                       <Edit className="w-4 h-4 text-[#f19fb5]" />
                     </button>
-                    <button 
+                    <button
                       onClick={() => handleDelete(req.id)}
-                      className="p-1.5 hover:bg-[#ffd7db] rounded-lg transition-all" 
+                      className="p-1.5 hover:bg-[#ffd7db] rounded-lg transition-all"
                       title="Удалить"
                     >
                       <Trash2 className="w-4 h-4 text-[#b12e4a]" />
@@ -1816,7 +1895,7 @@ function RequirementsView({
             onClick={(e) => e.stopPropagation()}
           >
             <h2 className="text-xl mb-6 text-[#f19fb5]">Создание требования</h2>
-            
+
             <div className="space-y-4">
               <div>
                 <label className="block mb-2">Название требования *</label>
@@ -1867,7 +1946,7 @@ function RequirementsView({
             onClick={(e) => e.stopPropagation()}
           >
             <h2 className="text-xl mb-6 text-[#f19fb5]">Редактирование требования</h2>
-            
+
             <div className="space-y-4">
               <div>
                 <label className="block mb-2">Название требования *</label>
@@ -1916,7 +1995,7 @@ function ReportsView({ showError }: { showError: (msg: string, type?: 'error' | 
   const [selectedStatus, setSelectedStatus] = useState('all');
 
   const filteredReports = testReportsData.filter(report => {
-    const matchesSearch = report.name.toLowerCase().includes(searchQuery.toLowerCase()) || 
+    const matchesSearch = report.name.toLowerCase().includes(searchQuery.toLowerCase()) ||
                           report.project.toLowerCase().includes(searchQuery.toLowerCase());
     const matchesStatus = selectedStatus === 'all' || report.status === selectedStatus;
     return matchesSearch && matchesStatus;
@@ -1992,14 +2071,14 @@ function ReportsView({ showError }: { showError: (msg: string, type?: 'error' | 
 }
 
 // Testing View
-function TestingView({ 
-  selectedTestSuite, 
-  setSelectedTestSuite, 
+function TestingView({
+  selectedTestSuite,
+  setSelectedTestSuite,
   handleRunTests,
   testSuitesData,
   selectedPlan,
   setSelectedPlan
-}: { 
+}: {
   selectedTestSuite: string;
   setSelectedTestSuite: (value: string) => void;
   handleRunTests: () => void;
@@ -2016,7 +2095,7 @@ function TestingView({
       <div className="max-w-[800px]">
         <div className="bg-white border border-[#f1d6df] rounded-lg p-6 mb-6">
           <h2 className="text-xl mb-6 text-[#f19fb5]">Параметры тестирования</h2>
-          
+
           <div className="space-y-6">
             <div>
               <label className="block mb-2">Проект *</label>
@@ -2031,7 +2110,7 @@ function TestingView({
 
             <div>
               <label className="block mb-2">Тест-план *</label>
-              <select 
+              <select
                 className="w-full px-4 py-2.5 border border-[#f1d6df] rounded-lg"
                 value={selectedPlan}
                 onChange={(e) => setSelectedPlan(e.target.value)}
@@ -2045,7 +2124,7 @@ function TestingView({
 
             <div>
               <label className="block mb-2">Тестовый набор *</label>
-              <select 
+              <select
                 className="w-full px-4 py-2.5 border border-[#f1d6df] rounded-lg"
                 value={selectedTestSuite}
                 onChange={(e) => setSelectedTestSuite(e.target.value)}
@@ -2076,11 +2155,11 @@ function TestingView({
 }
 
 // Profile View
-function ProfileView({ 
-  currentUser, 
-  usersData, 
-  setCurrentUser 
-}: { 
+function ProfileView({
+  currentUser,
+  usersData,
+  setCurrentUser
+}: {
   currentUser: SystemUser;
   usersData: SystemUser[];
   setCurrentUser: (user: SystemUser) => void;
@@ -2137,8 +2216,8 @@ function ProfileView({
                     setShowSwitchUser(false);
                   }}
                   className={`w-full text-left px-3 py-2 rounded-lg transition-all ${
-                    user.id === currentUser.id 
-                      ? 'bg-[#ffe9f0] text-[#f19fb5]' 
+                    user.id === currentUser.id
+                      ? 'bg-[#ffe9f0] text-[#f19fb5]'
                       : 'hover:bg-[#fff6fb]'
                   }`}
                 >
@@ -2157,12 +2236,12 @@ function ProfileView({
 }
 
 // System Settings View
-function SystemSettingsView({ 
-  usersData, 
-  setUsersData, 
+function SystemSettingsView({
+  usersData,
+  setUsersData,
   currentUser,
-  showError 
-}: { 
+  showError
+}: {
   usersData: SystemUser[];
   setUsersData: (data: SystemUser[]) => void;
   currentUser: SystemUser;
@@ -2230,7 +2309,7 @@ function SystemSettingsView({
           <h1 className="text-[26px] text-[#1e1e1e]">Настройки системы</h1>
           <p className="text-[#6c757d]">Управление пользователями и их ролями</p>
         </div>
-        <button 
+        <button
           onClick={() => setShowAddUserModal(true)}
           className="bg-[#f19fb5] text-white px-4 py-2 rounded-lg hover:bg-[#e27091] transition-all flex items-center gap-2"
         >
@@ -2296,15 +2375,15 @@ function SystemSettingsView({
                 </td>
                 <td className="py-3 px-4">
                   <div className="flex gap-2">
-                    <button 
+                    <button
                       onClick={() => { setEditingUser(user); setShowEditUserModal(true); }}
                       className="p-1.5 hover:bg-[#ffe9f0] rounded-lg transition-all"
                     >
                       <Edit className="w-4 h-4 text-[#f19fb5]" />
                     </button>
-                    <button 
+                    <button
                       onClick={() => handleDeleteUser(user.id)}
-                      className="p-1.5 hover:bg-[#ffd7db] rounded-lg transition-all" 
+                      className="p-1.5 hover:bg-[#ffd7db] rounded-lg transition-all"
                       title="Удалить"
                       disabled={user.id === currentUser.id}
                     >
@@ -2329,7 +2408,7 @@ function SystemSettingsView({
             onClick={(e) => e.stopPropagation()}
           >
             <h2 className="text-xl mb-6 text-[#f19fb5]">Добавить пользователя</h2>
-            
+
             <div className="space-y-4">
               <div>
                 <label className="block mb-2">Имя *</label>
@@ -2396,7 +2475,7 @@ function SystemSettingsView({
             onClick={(e) => e.stopPropagation()}
           >
             <h2 className="text-xl mb-6 text-[#f19fb5]">Изменить роль пользователя</h2>
-            
+
             <div className="space-y-4">
               <div>
                 <label className="block mb-2 text-sm text-[#6c757d]">Пользователь</label>
