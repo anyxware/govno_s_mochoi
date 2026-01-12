@@ -133,43 +133,9 @@ export function MainPage() {
       setIsLoading(false);
       return;
     }
-    
 
-    // TODO: проверять пользователей
       setIsAuthenticated(true);
-    // try {
-    //   // Загружаем профиль пользователя
-    //   const profileResult = await ApiService.getProfile();
-      
-    //   if (profileResult.error) {
-    //     // Если ошибка, удаляем невалидный токен
-    //     ApiService.removeToken();
-    //     localStorage.removeItem('user_profile');
-    //   } else if (profileResult.data) {
-    //     setUser(profileResult.data);
-    //     localStorage.setItem('user_profile', JSON.stringify(profileResult.data));
-    //     setIsAuthenticated(true);
-    //   }
-    // } catch (error) {
-    //   console.error('Auth check failed:', error);
-    //   ApiService.removeToken();
-    // } finally {
-    //   setIsLoading(false);
-    // }
   };
-
-  const handleLogin = () => {
-    setIsAuthenticated(true);
-    // Перезагружаем профиль
-    checkAuth();
-  };
-
-  // const handleLogout = () => {
-  //   ApiService.removeToken();
-  //   localStorage.removeItem('user_profile');
-  //   setIsAuthenticated(false);
-  //   setUser(null);
-  // };
 
   const [activeTab, setActiveTab] = useState<'dashboard' | 'projects' | 'archived-projects' | 'requirements' | 'reports' | 'testing' | 'profile' | 'settings'>('dashboard');
   const [selectedPlan, setSelectedPlan] = useState('integration');
@@ -178,7 +144,7 @@ export function MainPage() {
   const [history, setHistory] = useState<string[]>(['dashboard']);
   const [errorModal, setErrorModal] = useState<{ show: boolean; message: string; type: 'error' | 'success' }>({ show: false, message: '', type: 'error' });
   const [selectedTestSuite, setSelectedTestSuite] = useState('');
-  const [projectsData, setProjectsData] = useState<Project[]>([]); // TEST BACKEND
+  const [projectsData, setProjectsData] = useState(projectsDataState);
   const [requirementsData, setRequirementsData] = useState(requirementsDataState);
   const [testCasesData, setTestCasesData] = useState(testCasesDataState);
   const [testSuitesData, setTestSuitesData] = useState(testSuitesDataState);
@@ -234,10 +200,7 @@ export function MainPage() {
   };
 
   const handleLogout = () => {
-    showError('Вы успешно вышли из системы', 'success');
-    setTimeout(() => {
-      // Логика выхода
-    }, 1500);
+    ApiService.logout()
   };
 
   const handleRunTests = () => {
@@ -376,7 +339,7 @@ export function MainPage() {
             Выйти
           </button>
           <div className="mt-3 text-sm text-[#6c757d] px-3">
-            Версия 12.0.0
+            Версия Beta
           </div>
         </div>
       </div>
@@ -2164,7 +2127,6 @@ function ProfileView({
   usersData: SystemUser[];
   setCurrentUser: (user: SystemUser) => void;
 }) {
-  const [showSwitchUser, setShowSwitchUser] = useState(false);
 
   const roleLabels = {
     'admin': 'Администратор',
@@ -2184,7 +2146,6 @@ function ProfileView({
           </div>
           <div className="flex-1">
             <h2 className="text-xl">{currentUser.name}</h2>
-            <p className="text-[#6c757d]">{currentUser.email}</p>
           </div>
         </div>
         <div className="space-y-4">
@@ -2192,43 +2153,6 @@ function ProfileView({
             <label className="block mb-2 text-sm text-[#6c757d]">Роль</label>
             <p>{roleLabels[currentUser.role]}</p>
           </div>
-          <div>
-            <label className="block mb-2 text-sm text-[#6c757d]">Отдел</label>
-            <p>Отдел тестирования</p>
-          </div>
-        </div>
-
-        {/* Demo: Switch User */}
-        <div className="mt-6 pt-6 border-t border-[#f1d6df]">
-          <button
-            onClick={() => setShowSwitchUser(!showSwitchUser)}
-            className="text-sm text-[#f19fb5] hover:underline"
-          >
-            🔄 Переключить пользователя (демо)
-          </button>
-          {showSwitchUser && (
-            <div className="mt-3 space-y-2">
-              {usersData.map((user) => (
-                <button
-                  key={user.id}
-                  onClick={() => {
-                    setCurrentUser(user);
-                    setShowSwitchUser(false);
-                  }}
-                  className={`w-full text-left px-3 py-2 rounded-lg transition-all ${
-                    user.id === currentUser.id
-                      ? 'bg-[#ffe9f0] text-[#f19fb5]'
-                      : 'hover:bg-[#fff6fb]'
-                  }`}
-                >
-                  <div className="flex items-center justify-between">
-                    <span>{user.name}</span>
-                    <span className="text-xs text-[#6c757d]">{roleLabels[user.role]}</span>
-                  </div>
-                </button>
-              ))}
-            </div>
-          )}
         </div>
       </div>
     </div>

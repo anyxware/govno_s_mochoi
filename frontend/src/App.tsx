@@ -39,10 +39,7 @@ function App() {
   return (
     <Router>
       <Routes>
-        {/* Публичные маршруты */}
         <Route path="/login" element={<LoginPage />} />
-        
-        {/* Fallback - перенаправление */}
         <Route path="*" element={<MainPage />} />
       </Routes>
     </Router>

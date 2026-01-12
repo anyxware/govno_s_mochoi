@@ -73,7 +73,7 @@ export class ApiService {
   }
   
   // Получение профиля пользователя
-  private static getUserProfile(): any | null {
+  static getUserProfile(): any | null {
     const profile = localStorage.getItem('user_profile');
     return profile ? JSON.parse(profile) : null;
   }
@@ -82,7 +82,6 @@ export class ApiService {
   static removeToken(): void {
     localStorage.removeItem('auth_token');
     localStorage.removeItem('user_profile');
-    localStorage.removeItem('refresh_token'); // если используется
   }
   
   // Сохранение токена
@@ -90,7 +89,6 @@ export class ApiService {
     localStorage.setItem('auth_token', token);
   }
   
-  // Обновленный метод request с проверкой авторизации
   static async request<T>(
     endpoint: string, 
     method: string = 'GET', 
@@ -102,7 +100,7 @@ export class ApiService {
         'Content-Type': 'application/json',
       };
       
-      if (requiresAuth) {
+      if (requiresAuth && endpoint !== '/login') {
         // Проверяем авторизацию перед запросом
         if (!this.isAuthenticated()) {
           // Можно вызвать событие для перенаправления на страницу входа
@@ -121,13 +119,6 @@ export class ApiService {
         headers,
         body: data ? JSON.stringify(data) : undefined,
       });
-      
-      // Обработка 401 Unauthorized
-      if (response.status === 401) {
-        this.removeToken();
-        this.triggerAuthRequired();
-        return { error: 'Сессия истекла' };
-      }
       
       if (!response.ok) {
         const errorText = await response.text();
@@ -164,6 +155,15 @@ export class ApiService {
     } catch {
       return false;
     }
+  }
+
+  static logout() {
+    this.removeToken();
+    this.redirectToLogin();
+  }
+
+  private static redirectToLogin() {
+    window.location.replace('/login');
   }
 
   // Auth
