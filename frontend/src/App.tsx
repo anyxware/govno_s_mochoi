@@ -1,49 +1,44 @@
 import { useState, useEffect } from 'react';
-import { BrowserRouter as Router, Routes, Route, Navigate } from 'react-router-dom';
+import { TestLaunchPage } from './components/TestLaunchPageNew';
+import { LoginPage } from './components/LoginPage';
+import { TokenManager } from './services/api';
 
-import { MainPage } from './components/MainPage.tsx';
-import { ApiService } from './components/ApiService.tsx';
-import { LoginPage } from './components/LoginPage.tsx';
-
-function App() {
-  const [isCheckingAuth, setIsCheckingAuth] = useState(true);
+export default function App() {
+  const [isAuthenticated, setIsAuthenticated] = useState(false);
+  const [isLoading, setIsLoading] = useState(true);
 
   useEffect(() => {
-    // Проверяем авторизацию при загрузке приложения
-    const checkInitialAuth = async () => {
-      if (ApiService.isAuthenticated()) {
-        // Если есть токен, проверяем его валидность на сервере
-        try {
-          await ApiService.validateToken();
-        } catch (error) {
-          ApiService.removeToken();
-        }
-      }
-      setIsCheckingAuth(false);
-    };
-
-    checkInitialAuth();
+    // Check if user is already authenticated
+    const token = TokenManager.getToken();
+    const user = TokenManager.getUser();
+    
+    if (token && user) {
+      setIsAuthenticated(true);
+    }
+    
+    setIsLoading(false);
   }, []);
 
-  if (isCheckingAuth) {
+  const handleLoginSuccess = () => {
+    setIsAuthenticated(true);
+  };
+
+  const handleLogout = () => {
+    TokenManager.clear();
+    setIsAuthenticated(false);
+  };
+
+  if (isLoading) {
     return (
       <div className="min-h-screen bg-[#f8f9fa] flex items-center justify-center">
-        <div className="text-center">
-          <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-[#f19fb5] mx-auto"></div>
-          <p className="mt-4 text-gray-600">Загрузка приложения...</p>
-        </div>
+        <div className="text-[#f19fb5]">Загрузка...</div>
       </div>
     );
   }
 
-  return (
-    <Router>
-      <Routes>
-        <Route path="/login" element={<LoginPage />} />
-        <Route path="*" element={<MainPage />} />
-      </Routes>
-    </Router>
-  );
-}
+  if (!isAuthenticated) {
+    return <LoginPage onLoginSuccess={handleLoginSuccess} />;
+  }
 
-export default App;
+  return <TestLaunchPage onLogout={handleLogout} />;
+}

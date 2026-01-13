@@ -1,146 +1,112 @@
-// LoginPage.tsx
-import { useState, useEffect } from 'react';
-import { Lock, User, LogIn, AlertCircle } from 'lucide-react';
-import { useNavigate, useLocation } from 'react-router-dom';
-import { ApiService } from './ApiService';
+import { useState, FormEvent } from 'react';
+import { LogIn, AlertCircle } from 'lucide-react';
+import { apiClient, TokenManager, LoginRequest } from '../services/api';
 
-interface LoginCredentials {
-  username: string;
-  password: string;
+interface LoginPageProps {
+  onLoginSuccess: () => void;
 }
 
-export function LoginPage() {
-  const navigate = useNavigate();
-  const location = useLocation();
-  const [isLoading, setIsLoading] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+export function LoginPage({ onLoginSuccess }: LoginPageProps) {
+  const [username, setUsername] = useState('');
+  const [password, setPassword] = useState('');
+  const [error, setError] = useState('');
+  const [loading, setLoading] = useState(false);
 
-  const [credentials, setCredentials] = useState<LoginCredentials>({
-    username: '',
-    password: '',
-  });
-
-  // Получаем URL для редиректа после успешного входа
-  const searchParams = new URLSearchParams(location.search);
-  const redirectTo = searchParams.get('redirect') || '/';
-
-  // Проверяем, если пользователь уже авторизован
-  useEffect(() => {
-    if (ApiService.isAuthenticated()) {
-      navigate(redirectTo);
-    }
-  }, [navigate, redirectTo]);
-
-  const handleLogin = async (e: React.FormEvent) => {
+  const handleSubmit = async (e: FormEvent) => {
     e.preventDefault();
-    setError(null);
-
-    if (!credentials.username || !credentials.password) {
-      setError('Заполните все поля');
+    
+    if (!username || !password) {
+      setError('Пожалуйста, заполните все поля');
       return;
     }
 
-    setIsLoading(true);
+    setLoading(true);
+    setError('');
 
     try {
-      console.log(credentials);
-      const result = await ApiService.login(credentials);
-
-      if (result.error) {
-        setError(result.error);
-        return;
-      }
-
-      if (result.data?.token) {
-        // Сохраняем токен
-        ApiService.setToken(result.data.token);
-        // Перенаправляем на защищенную страницу
-        navigate(redirectTo);
-      }
+      const credentials: LoginRequest = { username, password };
+      const response = await apiClient.login(credentials);
+      
+      TokenManager.setToken(response.token);
+      TokenManager.setUser(response.user);
+      
+      onLoginSuccess();
     } catch (err) {
-      setError('Ошибка сервера. Попробуйте позже.');
       console.error('Login error:', err);
+      setError('Неверный логин или пароль');
     } finally {
-      setIsLoading(false);
+      setLoading(false);
     }
   };
 
   return (
-    <div className="min-h-screen bg-gradient-to-br from-gray-50 to-gray-100 flex items-center justify-center p-4">
-      <div className="bg-white rounded-2xl shadow-xl w-full max-w-sm overflow-hidden">
-        {/* Заголовок */}
-        <div className="bg-gradient-to-r from-blue-500 to-blue-600 p-8 text-center">
-          <h1 className="text-2xl font-bold text-white">Авторизация</h1>
-          <p className="text-white/90 mt-1 text-sm">Вход в СУТ</p>
+    <div className="min-h-screen bg-gradient-to-br from-[#fff6fb] to-[#ffe9f0] flex items-center justify-center p-4">
+      <div className="bg-white rounded-2xl shadow-xl p-8 w-full max-w-md">
+        {/* Logo/Header */}
+        <div className="text-center mb-8">
+          <div className="inline-flex items-center justify-center w-16 h-16 bg-[#ffe9f0] rounded-full mb-4">
+            <LogIn className="w-8 h-8 text-[#f19fb5]" />
+          </div>
+          <h1 className="text-2xl text-[#f19fb5] mb-2">СУТ Система</h1>
+          <p className="text-[#6c757d]">Система управления тестированием</p>
         </div>
 
-        {/* Форма */}
-        <div className="p-8">
+        {/* Login Form */}
+        <form onSubmit={handleSubmit} className="space-y-4">
+          <div>
+            <label htmlFor="username" className="block text-sm mb-2 text-[#2b2f33]">
+              Логин
+            </label>
+            <input
+              id="username"
+              type="text"
+              value={username}
+              onChange={(e) => setUsername(e.target.value)}
+              className="w-full px-4 py-3 border border-[#e8e9ea] rounded-lg focus:outline-none focus:ring-2 focus:ring-[#f19fb5] focus:border-transparent"
+              placeholder="Введите логин"
+              disabled={loading}
+            />
+          </div>
+
+          <div>
+            <label htmlFor="password" className="block text-sm mb-2 text-[#2b2f33]">
+              Пароль
+            </label>
+            <input
+              id="password"
+              type="password"
+              value={password}
+              onChange={(e) => setPassword(e.target.value)}
+              className="w-full px-4 py-3 border border-[#e8e9ea] rounded-lg focus:outline-none focus:ring-2 focus:ring-[#f19fb5] focus:border-transparent"
+              placeholder="Введите пароль"
+              disabled={loading}
+            />
+          </div>
+
           {error && (
-            <div className="mb-6 p-3 bg-red-50 border border-red-200 rounded-lg flex items-center gap-2">
-              <svg className="w-5 h-5 text-red-500 flex-shrink-0" fill="currentColor" viewBox="0 0 20 20">
-                <path fillRule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zM8.707 7.293a1 1 0 00-1.414 1.414L8.586 10l-1.293 1.293a1 1 0 101.414 1.414L10 11.414l1.293 1.293a1 1 0 001.414-1.414L11.414 10l1.293-1.293a1 1 0 00-1.414-1.414L10 8.586 8.707 7.293z" clipRule="evenodd" />
-              </svg>
-              <span className="text-red-700 text-sm">{error}</span>
+            <div className="flex items-center gap-2 p-3 bg-[#f8d7da] text-[#721c24] rounded-lg">
+              <AlertCircle className="w-4 h-4 flex-shrink-0" />
+              <span className="text-sm">{error}</span>
             </div>
           )}
 
-          <form onSubmit={handleLogin} className="space-y-5">
-            <div>
-              <label className="block text-sm font-medium text-gray-700 mb-2">
-                Логин
-              </label>
-              <input
-                type="text"
-                value={credentials.username}
-                onChange={(e) => setCredentials({...credentials, username: e.target.value})}
-                className="w-full px-4 py-3 bg-gray-50 border border-gray-200 rounded-lg focus:ring-2 focus:ring-blue-500/30 focus:border-blue-500 outline-none transition-all"
-                placeholder="Ваш логин"
-                disabled={isLoading}
-              />
-            </div>
+          <button
+            type="submit"
+            disabled={loading}
+            className="w-full px-6 py-3 bg-[#f19fb5] text-white rounded-lg hover:bg-[#e27091] transition-all disabled:opacity-50 disabled:cursor-not-allowed"
+          >
+            {loading ? 'Вход...' : 'Войти'}
+          </button>
+        </form>
 
-            <div>
-              <label className="block text-sm font-medium text-gray-700 mb-2">
-                Пароль
-              </label>
-              <input
-                type="password"
-                value={credentials.password}
-                onChange={(e) => setCredentials({...credentials, password: e.target.value})}
-                className="w-full px-4 py-3 bg-gray-50 border border-gray-200 rounded-lg focus:ring-2 focus:ring-blue-500/30 focus:border-blue-500 outline-none transition-all"
-                placeholder="Ваш пароль"
-                disabled={isLoading}
-              />
-            </div>
+        {/* Demo Credentials */}
+        <div className="mt-6 p-4 bg-[#fff6fb] rounded-lg">
+          <p className="text-sm text-[#6c757d] mb-2">Нужна помошь? support@nepomojet.ru</p>
+        </div>
 
-            <button
-              type="submit"
-              disabled={isLoading}
-              className="w-full py-3.5 bg-gradient-to-r from-blue-500 to-blue-600 text-white rounded-lg font-medium hover:shadow-lg hover:shadow-blue-500/30 transition-all duration-300 disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-2"
-            >
-              {isLoading ? (
-                <>
-                  <div className="animate-spin rounded-full h-4 w-4 border-2 border-white border-t-transparent"></div>
-                  <span>Вход...</span>
-                </>
-              ) : (
-                <>
-                  <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M11 16l-4-4m0 0l4-4m-4 4h14m-5 4v1a3 3 0 01-3 3H6a3 3 0 01-3-3V7a3 3 0 013-3h7a3 3 0 013 3v1" />
-                  </svg>
-                  <span>Войти</span>
-                </>
-              )}
-            </button>
-          </form>
-
-          {/* Футер */}
-          <div className="mt-8 pt-6 border-t border-gray-100">
-            <p className="text-center text-sm text-gray-500">
-              Нужна помощь? <span className="text-blue-500 font-medium">support@system.ru</span>
-            </p>
-          </div>
+        {/* Version */}
+        <div className="mt-6 text-center text-sm text-[#6c757d]">
+          Версия Beta
         </div>
       </div>
     </div>
