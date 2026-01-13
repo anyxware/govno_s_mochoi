@@ -42,7 +42,6 @@ export function LoginPage({ onLoginSuccess }: LoginPageProps) {
   return (
     <div className="min-h-screen bg-gradient-to-br from-[#fff6fb] to-[#ffe9f0] flex items-center justify-center p-4">
       <div className="bg-white rounded-2xl shadow-xl p-8 w-full max-w-md">
-        {/* Logo/Header */}
         <div className="text-center mb-8">
           <div className="inline-flex items-center justify-center w-16 h-16 bg-[#ffe9f0] rounded-full mb-4">
             <LogIn className="w-8 h-8 text-[#f19fb5]" />
@@ -51,7 +50,6 @@ export function LoginPage({ onLoginSuccess }: LoginPageProps) {
           <p className="text-[#6c757d]">Система управления тестированием</p>
         </div>
 
-        {/* Login Form */}
         <form onSubmit={handleSubmit} className="space-y-4">
           <div>
             <label htmlFor="username" className="block text-sm mb-2 text-[#2b2f33]">
@@ -99,12 +97,10 @@ export function LoginPage({ onLoginSuccess }: LoginPageProps) {
           </button>
         </form>
 
-        {/* Demo Credentials */}
         <div className="mt-6 p-4 bg-[#fff6fb] rounded-lg">
           <p className="text-sm text-[#6c757d] mb-2">Нужна помошь? support@nepomojet.ru</p>
         </div>
 
-        {/* Version */}
         <div className="mt-6 text-center text-sm text-[#6c757d]">
           Версия Beta
         </div>

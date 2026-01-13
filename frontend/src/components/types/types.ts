@@ -57,7 +57,7 @@ export interface TestReport {
   duration: string;
 }
 
-export interface SystemUser {
+export interface User {
   id: string;
   name: string;
   email: string;
