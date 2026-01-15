@@ -568,6 +568,12 @@ func createTestCasesHandler(w http.ResponseWriter, r *http.Request) {
 
 	for _, tc := range tcs {
 		var id int
+
+		if tc.Name == "" {
+			tc.Name = tc.Description
+			tc.Description = "Description: " + tc.Description
+		}
+
 		err := db.QueryRow("INSERT INTO test_cases (project_id, name, description data) VALUES ($1, $2, $3, $4) RETURNING id",
 			projectID, tc.Name, tc.Description, tc.Data).Scan(&id)
 		if err != nil {
