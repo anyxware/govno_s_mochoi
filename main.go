@@ -1,8 +1,10 @@
 package main
 
 import (
+	"bytes"
 	"database/sql"
 	"encoding/json"
+	"flag"
 	"fmt"
 	"log"
 	"net/http"
@@ -12,6 +14,7 @@ import (
 	"time"
 
 	"github.com/dgrijalva/jwt-go"
+	"github.com/google/uuid"
 	"github.com/gorilla/mux"
 	_ "github.com/lib/pq"
 )
@@ -20,11 +23,15 @@ const (
 	managerRole     = "manager"
 	testAnalystRole = "test-analyst"
 	testerRole      = "tester"
+
+	rodikAPI = "http://localhost:8080/api"
 )
 
 type Project struct {
 	ID              int       `json:"id"`
+	RodikProjectID  uuid.UUID `json:"rodik_project_id"`
 	Name            string    `json:"name"`
+	Description     string    `json:"description"`
 	ResponsibleName string    `json:"responsible_name"`
 	Status          string    `json:"status"`
 	CompletionDate  *string   `json:"completion_date,omitempty"`
@@ -33,33 +40,50 @@ type Project struct {
 }
 
 type Requirement struct {
-	ID          int       `json:"id"`
+	ID          uuid.UUID `json:"id"`
 	Name        string    `json:"name"`
 	Description string    `json:"description"`
 	CreatedAt   time.Time `json:"created_at"`
 }
 
+type RodikRequirement struct {
+	ID          uuid.UUID `json:"id"`
+	Title       string    `json:"title"`
+	Description string    `json:"description"`
+	CreatedAt   time.Time `json:"createdAt"`
+}
+
+type RodikTestResult struct {
+	ID     string `json:"id"`
+	Status string `json:"status"`
+}
+
 type TestPlan struct {
-	ID        int       `json:"id"`
-	ProjectID int       `json:"project_id"`
-	Name      string    `json:"name"`
-	Goal      string    `json:"goal"`
-	Deadline  *string   `json:"deadline,omitempty"`
-	CreatedAt time.Time `json:"created_at"`
+	ID          int       `json:"id"`
+	ProjectID   int       `json:"project_id"`
+	Name        string    `json:"name"`
+	Description string    `json:"description"`
+	Goal        string    `json:"goal"`
+	Deadline    *string   `json:"deadline,omitempty"`
+	CreatedAt   time.Time `json:"created_at"`
 }
 
 type TestCase struct {
-	ID        int       `json:"id"`
-	ProjectID int       `json:"project_id"`
-	Name      string    `json:"name"`
-	Status    string    `json:"status"`
-	CreatedAt time.Time `json:"created_at"`
+	ID          int             `json:"id"`
+	ProjectID   int             `json:"project_id"`
+	Name        string          `json:"name"`
+	Description string          `json:"description"`
+	Status      string          `json:"status"`
+	CreatedAt   time.Time       `json:"created_at"`
+	Data        json.RawMessage `json:"data"`
 }
 
 type TestSuite struct {
-	ID        int       `json:"id"`
-	Name      string    `json:"name"`
-	CreatedAt time.Time `json:"created_at"`
+	ID          int       `json:"id"`
+	ProjectID   int       `json:"project_id"`
+	Name        string    `json:"name"`
+	Description string    `json:"description"`
+	CreatedAt   time.Time `json:"created_at"`
 }
 
 type TestReport struct {
@@ -100,10 +124,18 @@ type Claims struct {
 var (
 	db        *sql.DB
 	jwtSecret = []byte("secret-key")
+
+	integration = flag.String("int", "", "")
 )
 
 func initDB() error {
-	connStr := "host=localhost port=5432 user=postgres password=postgres dbname=postgres sslmode=disable"
+	port := "5432"
+
+	if *integration != "" {
+		port = "5433"
+	}
+
+	connStr := fmt.Sprintf("host=localhost port=%s user=postgres password=postgres dbname=postgres sslmode=disable", port)
 	var err error
 	db, err = sql.Open("postgres", connStr)
 	if err != nil {
@@ -148,7 +180,7 @@ func verifyJWT(tokenString string) (*Claims, error) {
 }
 
 func checkRole(w http.ResponseWriter, r *http.Request, role string) bool {
-	bypass := r.Header.Get("Hui")
+	bypass := r.Header.Get("Rodik")
 	if bypass != "" {
 		return true
 	}
@@ -166,8 +198,8 @@ func checkRole(w http.ResponseWriter, r *http.Request, role string) bool {
 		return false
 	}
 
-	if claims.Role != "manager" {
-		http.Error(w, "Forbidden: manager role required", http.StatusForbidden)
+	if claims.Role != role {
+		http.Error(w, "Forbidden: invalid role", http.StatusForbidden)
 		return false
 	}
 
@@ -214,7 +246,7 @@ func getProjectsHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	rows, err := db.Query("SELECT id, name, responsible_name, status, completion_date, is_archived, created_at FROM projects")
+	rows, err := db.Query("SELECT id, name, description, responsible_name, status, completion_date, is_archived, created_at FROM projects")
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
@@ -225,7 +257,7 @@ func getProjectsHandler(w http.ResponseWriter, r *http.Request) {
 	for rows.Next() {
 		var p Project
 		var completionDate sql.NullString
-		err := rows.Scan(&p.ID, &p.Name, &p.ResponsibleName, &p.Status, &completionDate, &p.IsArchived, &p.CreatedAt)
+		err := rows.Scan(&p.ID, &p.Name, &p.Description, &p.ResponsibleName, &p.Status, &completionDate, &p.IsArchived, &p.CreatedAt)
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
@@ -259,8 +291,8 @@ func getProjectHandler(w http.ResponseWriter, r *http.Request) {
 
 	var p Project
 	var completionDate sql.NullString
-	err = db.QueryRow("SELECT id, name, responsible_name, status, completion_date, is_archived, created_at FROM projects WHERE id = $1", id).
-		Scan(&p.ID, &p.Name, &p.ResponsibleName, &p.Status, &completionDate, &p.IsArchived, &p.CreatedAt)
+	err = db.QueryRow("SELECT id, name, description, responsible_name, status, completion_date, is_archived, created_at FROM projects WHERE id = $1", id).
+		Scan(&p.ID, &p.Name, &p.Description, &p.ResponsibleName, &p.Status, &completionDate, &p.IsArchived, &p.CreatedAt)
 	if err != nil {
 		http.Error(w, "Project not found", http.StatusNotFound)
 		return
@@ -287,8 +319,8 @@ func createProjectHandler(w http.ResponseWriter, r *http.Request) {
 	completionDate := time.Now().Add(2 * 7 * 24 * time.Hour)
 
 	var id int
-	err := db.QueryRow("INSERT INTO projects (name, responsible_name, completion_date) VALUES ($1, $2, $3) RETURNING id",
-		p.Name, p.ResponsibleName, completionDate).Scan(&id)
+	err := db.QueryRow("INSERT INTO projects (name, description, responsible_name, completion_date) VALUES ($1, $2, $3, $4) RETURNING id",
+		p.Name, p.Description, p.ResponsibleName, completionDate).Scan(&id)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
@@ -384,6 +416,40 @@ func setProjectCompletionDateHandler(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
+func setProjectDescriptionHandler(w http.ResponseWriter, r *http.Request) {
+	if !checkRole(w, r, managerRole) {
+		return
+	}
+
+	idStr := r.URL.Query().Get("id")
+	if idStr == "" {
+		http.Error(w, "id parameter is required", http.StatusBadRequest)
+		return
+	}
+
+	id, err := strconv.Atoi(idStr)
+	if err != nil {
+		http.Error(w, "Invalid id", http.StatusBadRequest)
+		return
+	}
+
+	var data struct {
+		Description string `json:"description"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&data); err != nil {
+		http.Error(w, "Invalid request body", http.StatusBadRequest)
+		return
+	}
+
+	_, err = db.Exec("UPDATE projects SET description = $1 WHERE id = $2", data.Description, id)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	w.WriteHeader(http.StatusNoContent)
+}
+
 func getTestCasesHandler(w http.ResponseWriter, r *http.Request) {
 	if !checkRole(w, r, managerRole) {
 		return
@@ -401,7 +467,7 @@ func getTestCasesHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	rows, err := db.Query("SELECT id, project_id, name, status, created_at FROM test_cases WHERE project_id = $1", projectID)
+	rows, err := db.Query("SELECT id, project_id, name, description, status, created_at FROM test_cases WHERE project_id = $1", projectID)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
@@ -411,7 +477,7 @@ func getTestCasesHandler(w http.ResponseWriter, r *http.Request) {
 	var testCases []TestCase
 	for rows.Next() {
 		var tc TestCase
-		err := rows.Scan(&tc.ID, &tc.ProjectID, &tc.Name, &tc.Status, &tc.CreatedAt)
+		err := rows.Scan(&tc.ID, &tc.ProjectID, &tc.Name, &tc.Description, &tc.Status, &tc.CreatedAt)
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
@@ -441,8 +507,8 @@ func getTestCaseHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var tc TestCase
-	err = db.QueryRow("SELECT id, project_id, name, status, created_at FROM test_cases WHERE id = $1", id).
-		Scan(&tc.ID, &tc.ProjectID, &tc.Name, &tc.Status, &tc.CreatedAt)
+	err = db.QueryRow("SELECT id, project_id, name, description, status, created_at FROM test_cases WHERE id = $1", id).
+		Scan(&tc.ID, &tc.ProjectID, &tc.Name, &tc.Description, &tc.Status, &tc.CreatedAt)
 	if err != nil {
 		http.Error(w, "Test case not found", http.StatusNotFound)
 		return
@@ -464,8 +530,8 @@ func createTestCaseHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var id int
-	err := db.QueryRow("INSERT INTO test_cases (project_id, name, status) VALUES ($1, $2, $3) RETURNING id",
-		tc.ProjectID, tc.Name, tc.Status).Scan(&id)
+	err := db.QueryRow("INSERT INTO test_cases (project_id, name, description, data) VALUES ($1, $2, $3, $4) RETURNING id",
+		tc.ProjectID, tc.Name, tc.Description, tc.Data).Scan(&id)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
@@ -473,6 +539,47 @@ func createTestCaseHandler(w http.ResponseWriter, r *http.Request) {
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]int{"id": id})
+}
+
+func createTestCasesHandler(w http.ResponseWriter, r *http.Request) {
+	if !checkRole(w, r, managerRole) {
+		return
+	}
+
+	projectIDStr := r.URL.Query().Get("project_id")
+	if projectIDStr == "" {
+		http.Error(w, "project_id parameter is required", http.StatusBadRequest)
+		return
+	}
+
+	projectID, err := strconv.Atoi(projectIDStr)
+	if err != nil {
+		http.Error(w, "Invalid id", http.StatusBadRequest)
+		return
+	}
+
+	var tcs []TestCase
+	if err := json.NewDecoder(r.Body).Decode(&tcs); err != nil {
+		http.Error(w, "Invalid request body", http.StatusBadRequest)
+		return
+	}
+
+	var res []int
+
+	for _, tc := range tcs {
+		var id int
+		err := db.QueryRow("INSERT INTO test_cases (project_id, name, description data) VALUES ($1, $2, $3, $4) RETURNING id",
+			projectID, tc.Name, tc.Description, tc.Data).Scan(&id)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+
+		res = append(res, id)
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string][]int{"ids": res})
 }
 
 func deleteTestCaseHandler(w http.ResponseWriter, r *http.Request) {
@@ -519,7 +626,7 @@ func addRequirementToTestCaseHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	requirementID, err := strconv.Atoi(requirementIDStr)
+	requirementID, err := uuid.Parse(requirementIDStr)
 	if err != nil {
 		http.Error(w, "Invalid requirement_id", http.StatusBadRequest)
 		return
@@ -553,7 +660,7 @@ func removeRequirementFromTestCaseHandler(w http.ResponseWriter, r *http.Request
 		return
 	}
 
-	requirementID, err := strconv.Atoi(requirementIDStr)
+	requirementID, err := uuid.Parse(requirementIDStr)
 	if err != nil {
 		http.Error(w, "Invalid requirement_id", http.StatusBadRequest)
 		return
@@ -569,12 +676,46 @@ func removeRequirementFromTestCaseHandler(w http.ResponseWriter, r *http.Request
 	w.WriteHeader(http.StatusNoContent)
 }
 
+func setTestCaseDescriptionHandler(w http.ResponseWriter, r *http.Request) {
+	if !checkRole(w, r, managerRole) {
+		return
+	}
+
+	idStr := r.URL.Query().Get("id")
+	if idStr == "" {
+		http.Error(w, "id parameter is required", http.StatusBadRequest)
+		return
+	}
+
+	id, err := strconv.Atoi(idStr)
+	if err != nil {
+		http.Error(w, "Invalid id", http.StatusBadRequest)
+		return
+	}
+
+	var data struct {
+		Description string `json:"description"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&data); err != nil {
+		http.Error(w, "Invalid request body", http.StatusBadRequest)
+		return
+	}
+
+	_, err = db.Exec("UPDATE test_cases SET description = $1 WHERE id = $2", data.Description, id)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	w.WriteHeader(http.StatusNoContent)
+}
+
 func getTestPlansHandler(w http.ResponseWriter, r *http.Request) {
 	if !checkRole(w, r, managerRole) {
 		return
 	}
 
-	rows, err := db.Query("SELECT id, project_id, name, goal, deadline, created_at FROM test_plans")
+	rows, err := db.Query("SELECT id, project_id, name, description, goal, deadline, created_at FROM test_plans")
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
@@ -585,7 +726,7 @@ func getTestPlansHandler(w http.ResponseWriter, r *http.Request) {
 	for rows.Next() {
 		var tp TestPlan
 		var deadline sql.NullString
-		err := rows.Scan(&tp.ID, &tp.ProjectID, &tp.Name, &tp.Goal, &deadline, &tp.CreatedAt)
+		err := rows.Scan(&tp.ID, &tp.ProjectID, &tp.Name, &tp.Description, &tp.Goal, &deadline, &tp.CreatedAt)
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
@@ -619,8 +760,8 @@ func getTestPlanHandler(w http.ResponseWriter, r *http.Request) {
 
 	var tp TestPlan
 	var deadline sql.NullString
-	err = db.QueryRow("SELECT id, project_id, name, goal, deadline, created_at FROM test_plans WHERE id = $1", id).
-		Scan(&tp.ID, &tp.ProjectID, &tp.Name, &tp.Goal, &deadline, &tp.CreatedAt)
+	err = db.QueryRow("SELECT id, project_id, name, description, goal, deadline, created_at FROM test_plans WHERE id = $1", id).
+		Scan(&tp.ID, &tp.ProjectID, &tp.Name, &tp.Description, &tp.Goal, &deadline, &tp.CreatedAt)
 	if err != nil {
 		http.Error(w, "Test plan not found", http.StatusNotFound)
 		return
@@ -645,8 +786,8 @@ func createTestPlanHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var id int
-	err := db.QueryRow("INSERT INTO test_plans (project_id, name, goal, deadline) VALUES ($1, $2, $3, $4) RETURNING id",
-		tp.ProjectID, tp.Name, tp.Goal, tp.Deadline).Scan(&id)
+	err := db.QueryRow("INSERT INTO test_plans (project_id, name, description, goal, deadline) VALUES ($1, $2, $3, $4, $5) RETURNING id",
+		tp.ProjectID, tp.Name, tp.Description, tp.Goal, tp.Deadline).Scan(&id)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
@@ -682,12 +823,46 @@ func deleteTestPlanHandler(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
+func setTestPlanDescriptionHandler(w http.ResponseWriter, r *http.Request) {
+	if !checkRole(w, r, managerRole) {
+		return
+	}
+
+	idStr := r.URL.Query().Get("id")
+	if idStr == "" {
+		http.Error(w, "id parameter is required", http.StatusBadRequest)
+		return
+	}
+
+	id, err := strconv.Atoi(idStr)
+	if err != nil {
+		http.Error(w, "Invalid id", http.StatusBadRequest)
+		return
+	}
+
+	var data struct {
+		Description string `json:"description"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&data); err != nil {
+		http.Error(w, "Invalid request body", http.StatusBadRequest)
+		return
+	}
+
+	_, err = db.Exec("UPDATE test_plans SET description = $1 WHERE id = $2", data.Description, id)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	w.WriteHeader(http.StatusNoContent)
+}
+
 func getTestSuitesHandler(w http.ResponseWriter, r *http.Request) {
 	if !checkRole(w, r, managerRole) {
 		return
 	}
 
-	rows, err := db.Query("SELECT id, name, created_at FROM test_suites")
+	rows, err := db.Query("SELECT id, name, description, created_at FROM test_suites")
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
@@ -697,7 +872,7 @@ func getTestSuitesHandler(w http.ResponseWriter, r *http.Request) {
 	var testSuites []TestSuite
 	for rows.Next() {
 		var ts TestSuite
-		err := rows.Scan(&ts.ID, &ts.Name, &ts.CreatedAt)
+		err := rows.Scan(&ts.ID, &ts.Name, &ts.Description, &ts.CreatedAt)
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
@@ -727,8 +902,8 @@ func getTestSuiteHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var ts TestSuite
-	err = db.QueryRow("SELECT id, name, created_at FROM test_suites WHERE id = $1", id).
-		Scan(&ts.ID, &ts.Name, &ts.CreatedAt)
+	err = db.QueryRow("SELECT id, name, description, created_at FROM test_suites WHERE id = $1", id).
+		Scan(&ts.ID, &ts.Name, &ts.Description, &ts.CreatedAt)
 	if err != nil {
 		http.Error(w, "Test suite not found", http.StatusNotFound)
 		return
@@ -736,6 +911,55 @@ func getTestSuiteHandler(w http.ResponseWriter, r *http.Request) {
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(ts)
+}
+
+func createTestSuiteHandler(w http.ResponseWriter, r *http.Request) {
+	if !checkRole(w, r, managerRole) {
+		return
+	}
+
+	var ts TestSuite
+	if err := json.NewDecoder(r.Body).Decode(&ts); err != nil {
+		http.Error(w, "Invalid request body", http.StatusBadRequest)
+		return
+	}
+
+	var id int
+	err := db.QueryRow("INSERT INTO test_suites (project_id, name, description) VALUES ($1, $2, $3) RETURNING id",
+		ts.ProjectID, ts.Name, ts.Description).Scan(&id)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]int{"id": id})
+}
+
+func deleteTestSuiteHandler(w http.ResponseWriter, r *http.Request) {
+	if !checkRole(w, r, managerRole) {
+		return
+	}
+
+	idStr := r.URL.Query().Get("id")
+	if idStr == "" {
+		http.Error(w, "id parameter is required", http.StatusBadRequest)
+		return
+	}
+
+	id, err := strconv.Atoi(idStr)
+	if err != nil {
+		http.Error(w, "Invalid id", http.StatusBadRequest)
+		return
+	}
+
+	_, err = db.Exec("DELETE FROM test_suites WHERE id = $1", id)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	w.WriteHeader(http.StatusNoContent)
 }
 
 func addTestCaseToTestSuiteHandler(w http.ResponseWriter, r *http.Request) {
@@ -806,8 +1030,96 @@ func removeTestCaseFromTestSuiteHandler(w http.ResponseWriter, r *http.Request) 
 	w.WriteHeader(http.StatusNoContent)
 }
 
+func setTestSuiteDescriptionHandler(w http.ResponseWriter, r *http.Request) {
+	if !checkRole(w, r, managerRole) {
+		return
+	}
+
+	idStr := r.URL.Query().Get("id")
+	if idStr == "" {
+		http.Error(w, "id parameter is required", http.StatusBadRequest)
+		return
+	}
+
+	id, err := strconv.Atoi(idStr)
+	if err != nil {
+		http.Error(w, "Invalid id", http.StatusBadRequest)
+		return
+	}
+
+	var data struct {
+		Description string `json:"description"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&data); err != nil {
+		http.Error(w, "Invalid request body", http.StatusBadRequest)
+		return
+	}
+
+	_, err = db.Exec("UPDATE test_suites SET description = $1 WHERE id = $2", data.Description, id)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	w.WriteHeader(http.StatusNoContent)
+}
+
 func getRequirementsHandler(w http.ResponseWriter, r *http.Request) {
 	if !checkRole(w, r, managerRole) {
+		return
+	}
+
+	projectIDStr := r.URL.Query().Get("project_id")
+	projectID, err := strconv.Atoi(projectIDStr)
+	if err != nil {
+		http.Error(w, "Invalid project_id", http.StatusBadRequest)
+		return
+	}
+
+	if *integration != "" {
+		var rodikProjectID uuid.UUID
+
+		err := db.QueryRow("SELECT rodik_project_id FROM projects WHERE id = $1", projectID).Scan(&rodikProjectID)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+
+		client := &http.Client{}
+
+		req, err := http.NewRequest("GET", rodikAPI+"/requirements?projectId="+rodikProjectID.String(), nil)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+
+		req.Header.Add("Authorization", "Bearer tms")
+		resp, err := client.Do(req)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+
+		var rodikReqs []RodikRequirement
+
+		if err := json.NewDecoder(resp.Body).Decode(&rodikReqs); err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+
+		var reqs []Requirement
+		for _, rr := range rodikReqs {
+			reqs = append(reqs, Requirement{
+				ID:          rr.ID,
+				Name:        rr.Title,
+				Description: rr.Description,
+				CreatedAt:   rr.CreatedAt,
+			})
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(reqs)
+
 		return
 	}
 
@@ -856,8 +1168,51 @@ func runTestsHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(map[string]int{"id": id})
+	if *integration != "" {
+		return
+	}
+
+	rows, err := db.Query("SELECT test_case_id FROM test_case_suites WHERE test_suite_id = $1", data.TestSuiteID)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	defer rows.Close()
+
+	var res []RodikTestResult
+	for rows.Next() {
+		var testCaseID int64
+		err := rows.Scan(&testCaseID)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		res = append(res, RodikTestResult{
+			ID:     strconv.FormatInt(int64(testCaseID), 10),
+			Status: "PASSED",
+		})
+	}
+
+	jsonData, err := json.Marshal(res)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	req, err := http.NewRequest("PATCH", rodikAPI+"/tests", bytes.NewBuffer(jsonData))
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	req.Header.Set("Authorization", "Bearer tms")
+
+	client := &http.Client{}
+	_, err = client.Do(req)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
 }
 
 func getTestReportsHandler(w http.ResponseWriter, r *http.Request) {
@@ -896,32 +1251,9 @@ func getTestReportsHandler(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(reports)
 }
 
-func swaggerHandler(w http.ResponseWriter, r *http.Request) {
-	swaggerJSON := `{
-		"openapi": "3.0.0",
-		"info": {
-			"title": "Test Management System API",
-			"version": "1.0.0"
-		},
-		"paths": {
-			"/api/login": {
-				"post": {
-					"summary": "Login",
-					"responses": {
-						"200": {
-							"description": "Success"
-						}
-					}
-				}
-			}
-		}
-	}`
-
-	w.Header().Set("Content-Type", "application/json")
-	w.Write([]byte(swaggerJSON))
-}
-
 func main() {
+	flag.Parse()
+
 	if err := initDB(); err != nil {
 		log.Fatal("Failed to connect to database:", err)
 	}
@@ -941,23 +1273,30 @@ func main() {
 	r.HandleFunc("/project", deleteProjectHandler).Methods("DELETE")
 	r.HandleFunc("/project/archive", archiveProjectHandler).Methods("POST")
 	r.HandleFunc("/project/set-completion-date", setProjectCompletionDateHandler).Methods("POST")
+	r.HandleFunc("/project/set-description", setProjectDescriptionHandler).Methods("POST")
 
 	r.HandleFunc("/test-cases", getTestCasesHandler).Methods("GET")
 	r.HandleFunc("/test-case", getTestCaseHandler).Methods("GET")
 	r.HandleFunc("/test-case", createTestCaseHandler).Methods("POST")
+	r.HandleFunc("/test-cases", createTestCasesHandler).Methods("POST")
 	r.HandleFunc("/test-case", deleteTestCaseHandler).Methods("DELETE")
 	r.HandleFunc("/test-case/add-requirement", addRequirementToTestCaseHandler).Methods("POST")
 	r.HandleFunc("/test-case/remove-requirement", removeRequirementFromTestCaseHandler).Methods("POST")
+	r.HandleFunc("/test-case/set-description", setTestCaseDescriptionHandler).Methods("POST")
 
 	r.HandleFunc("/test-plans", getTestPlansHandler).Methods("GET")
 	r.HandleFunc("/test-plan", getTestPlanHandler).Methods("GET")
 	r.HandleFunc("/test-plan", createTestPlanHandler).Methods("POST")
 	r.HandleFunc("/test-plan", deleteTestPlanHandler).Methods("DELETE")
+	r.HandleFunc("/test-plan/set-description", setTestPlanDescriptionHandler).Methods("POST")
 
 	r.HandleFunc("/test-suites", getTestSuitesHandler).Methods("GET")
 	r.HandleFunc("/test-suite", getTestSuiteHandler).Methods("GET")
+	r.HandleFunc("/test-suite", createTestSuiteHandler).Methods("POST")
+	r.HandleFunc("/test-suite", deleteTestSuiteHandler).Methods("DELETE")
 	r.HandleFunc("/test-suite/add-test-case", addTestCaseToTestSuiteHandler).Methods("POST")
 	r.HandleFunc("/test-suite/remove-test-case", removeTestCaseFromTestSuiteHandler).Methods("POST")
+	r.HandleFunc("/test-suite/set-description", setTestSuiteDescriptionHandler).Methods("POST")
 
 	r.HandleFunc("/run-tests", runTestsHandler).Methods("POST")
 	r.HandleFunc("/test-reports", getTestReportsHandler).Methods("GET")
